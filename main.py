@@ -13,6 +13,7 @@ import sys
 import re
 import uuid
 from dotenv import load_dotenv
+import traceback
 
 pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 
@@ -121,6 +122,26 @@ def _safe_parse_time(text):
     num_match = re.match(r"(\d+)(\.\d+)?", cleaned)
     return float(num_match.group(1)) if num_match else None
 
+def _normalize_player_row(row):
+    """rowを（name, k d, a)の形式に正規化する。欠損時は空文字で補完"""
+    if isinstance(row, dict):
+        return (
+            (row.get("name") or "").strip(),
+            row.get("k", ""),
+            row.get("d", ""),
+            row.get("a", ""),
+            row.get("rm", "")
+        )
+    
+    if isinstance(row, (list, tuple)):
+        items = list(row)
+        if len(items) < 4:
+            items += [""] * (4 - len(items))
+        name, k, d, a, rm = items[:5]
+        return (str(name).strip(), k, d, a, rm)
+    
+    return ("", "", "", "", "")
+
 @bot.command(name="commands")
 async def help_command(ctx):
     if ctx.author.id != bot.user.id:
@@ -168,6 +189,7 @@ async def updateimage(ctx, game_id: str):
         return
     
     try:
+        
         attachment = ctx.message.attachments[0]
 
         async with aiohttp.ClientSession() as session:
@@ -181,6 +203,7 @@ async def updateimage(ctx, game_id: str):
 
         base_y = 175
         row_height = 70
+
         for i in range(0, 16, 2):  # 2人ずつ処理
             y1 = base_y + i * row_height
             y2 = y1 + row_height
@@ -196,14 +219,14 @@ async def updateimage(ctx, game_id: str):
             k1 = ocr_crop(rslt_img, (1070, y1, 1120, y2), "--psm 7")
             d1 = ocr_crop(rslt_img, (1120, y1, 1170, y2), "--psm 7")
             a1 = ocr_crop(rslt_img, (1170, y1, 1220, y2), "--psm 7")
-            rm1 = ocr_crop(rslt_img, (930, y1, 1070, y2), "--psm 7")
+            rm1 = ocr_crop(rslt_img, (930, y1, 1070, y2), "--psm 7 -c tessedits_char_whitelist=0123456789")  # MVPは数字のみ
 
             # ===== teamプレイヤー2 =====
             name2 = ocr_crop(rslt_img, (680, y3, 930, y4), "--psm 7")
             k2 = ocr_crop(rslt_img, (1070, y3, 1120, y4), "--psm 7")
             d2 = ocr_crop(rslt_img, (1120, y3, 1170, y4), "--psm 7")
             a2 = ocr_crop(rslt_img, (1170, y3, 1220, y4), "--psm 7")
-            rm2 = ocr_crop(rslt_img, (930, y3, 1070, y4), "--psm 7")
+            rm2 = ocr_crop(rslt_img, (930, y3, 1070, y4), "--psm 7 -c tessedits_char_whitelist=0123456789")  # MVPは数字のみ
 
             # ===== チーム情報（中央で取得） =====
             avg_win_time_text = ocr_crop(rslt_img, (1230, mid_y, 1330, mid_y2), "--psm 7")
@@ -228,14 +251,10 @@ async def updateimage(ctx, game_id: str):
                 {"name": name2, "k": k2, "d": d2, "a": a2, "rm": rm2},
             )
             for row in player_rows:
-                name = (row.get("name") or "").strip()
+                name, k, d, a, rm = _normalize_player_row(row)
                 if not name:
                     continue
 
-                k = row.get("k","")
-                d = row.get("d","")
-                a = row.get("a","")
-                rm = row.get("rm","")
                 kills, deaths, assists, rounds_mvp = parse_kda(f"{k} {d} {a} {rm}")
                 players.append({
                     "ingame_name": name,
@@ -271,13 +290,13 @@ async def updateimage(ctx, game_id: str):
             
             if player_id:
                 p = tournament["players"][player_id]
-                p["kills"] = kills
-                p["deaths"] = deaths
-                p["assists"] = assists
-                p["score"] = score
-                p["rounds_MVP"] = rounds_mvp
-                p["Matches_MVP"] = 0
-                p["AVG_WIN_time"] = avg_win_time
+                p["kills"] += kills
+                p["deaths"] += deaths
+                p["assists"] += assists
+                p["score"] += score
+                p["rounds_MVP"] += rounds_mvp
+                p["Matches_MVP"] += 0
+                p["AVG_WIN_time"] = (p["AVG_WIN_time"] + avg_win_time) / 2
 
                 result_msg += (
                     f"{ingame_name}: MVP={rounds_mvp}, {kills}/{deaths}/{assists}, SCORE={score}, AVG_WIN_TIME={avg_win_time}\n"
@@ -306,7 +325,15 @@ async def updateimage(ctx, game_id: str):
         await ctx.send(result_msg)
 
     except Exception as e:
-        await ctx.send(f"❌ エラーが発生しました: {str(e)}")
+        try:
+            tb = traceback.format_tb(e.__traceback__)
+            last = tb[-1] if tb else None
+            loc = f"{last.filename}:{last.lineno}"if last else "不明な場所"
+        except Exception:
+            loc = "不明な場所"
+
+        await ctx.send(f"❌ エラーが発生しました: {str(e)} (場所: {loc})")
+        
 
 @bot.command(name="playerstats")
 async def playerstats(ctx, game_id: str, discord_user: discord.Member):
