@@ -14,6 +14,8 @@ import re
 import uuid
 from dotenv import load_dotenv
 import traceback
+import cv2
+import numpy as np
 
 pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 
@@ -198,6 +200,17 @@ async def updateimage(ctx, game_id: str):
                 image_data = await resp.read()
 
         rslt_img = PILImage.open(BytesIO(image_data)).convert("RGB")
+
+        def preprocess(rslt_img):
+            img = np.array(rslt_img)
+
+            gray = cv2.cvtColor(img,cv2.COLOR_BGR2GRAY)
+
+            _, thresh = cv2.threshold(gray, 140, 255, cv2.THRESH_BINARY)
+
+            return image.fromarray(thresh)
+        
+        preprocess()
 
         players = []
 
