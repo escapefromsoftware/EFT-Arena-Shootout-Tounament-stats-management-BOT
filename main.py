@@ -16,6 +16,7 @@ from dotenv import load_dotenv
 import traceback
 import cv2
 import numpy as np
+from PIL import Image as PILImage
 
 pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 
@@ -115,14 +116,14 @@ def _safe_parse_time(text):
     cleaned = re.sub(r"[^\d.:]", "", raw)
 
     if ":" in cleaned:
-        m, s = cleaned.split(":", 1)
+        m, sec = cleaned.split(":", 1)
         minutes = int(m) if m.isdigit() else 0
-        sec_match = re.match(r"(\d+)(\.\d+)?", s)
-        seconds = float(sec_match.group(1)) if sec_match else 0
+        sec_match = re.match(r"(\d+)(\.\d+)?", sec)
+        seconds = float(sec_match.group(0)) if sec_match else 0.0
         return minutes * 60 + seconds
     
     num_match = re.match(r"(\d+)(\.\d+)?", cleaned)
-    return float(num_match.group(1)) if num_match else None
+    return float(num_match.group(0)) if num_match else None
 
 def _normalize_player_row(row):
     """rowを（name, k d, a)の形式に正規化する。欠損時は空文字で補完"""
@@ -137,12 +138,33 @@ def _normalize_player_row(row):
     
     if isinstance(row, (list, tuple)):
         items = list(row)
-        if len(items) < 4:
-            items += [""] * (4 - len(items))
+        if len(items) < 5:
+            items += [""] * (5 - len(items))
         name, k, d, a, rm = items[:5]
         return (str(name).strip(), k, d, a, rm)
     
     return ("", "", "", "", "")
+
+def ocr_crop(image, box, config):
+    """crop領域をOCRしてテキストを返す"""
+    cropped = image.crop(box)
+
+    gray = cropped.convert("L")
+    binary = gray.point(lambda p: 255 if p > 160 else 0, mode="1")
+
+    text = pytesseract.image_to_string(binary, lang="eng", config=config, timeout=4)
+    return (text or "").strip()
+
+def _clean_player_name(text):
+    """プレイヤー名OCRのノイズを軽く正規化"""
+    raw = (text or "").strip()
+    raw = raw.replace("|", "l").replace("I", "i")
+    cleaned = re.sub(r"[^A-Za-z0-9_]+", "", raw)
+    return cleaned
+
+def _parse_cell_int(text, default=0):
+    v = _safe_parse_int(text)
+    return v if isinstance(v, int) else default
 
 @bot.command(name="commands")
 async def help_command(ctx):
@@ -201,23 +223,15 @@ async def updateimage(ctx, game_id: str):
 
         rslt_img = PILImage.open(BytesIO(image_data)).convert("RGB")
 
-        def preprocess(rslt_img):
-            img = np.array(rslt_img)
-
-            gray = cv2.cvtColor(img,cv2.COLOR_BGR2GRAY)
-
-            _, thresh = cv2.threshold(gray, 140, 255, cv2.THRESH_BINARY)
-
-            return image.fromarray(thresh)
-        
-        preprocess()
-
         players = []
 
         base_y = 175
         row_height = 70
 
-        for i in range(0, 16, 2):  # 2人ずつ処理
+        #最大8チーム（16行を2人ずつ処理。空行が続けば終了
+        max_teams = 8
+        empty_team_streak = 0
+        for i in range(0, max_teams * 2, 2):
             y1 = base_y + i * row_height
             y2 = y1 + row_height
             y3 = base_y + (i + 1) * row_height
@@ -228,18 +242,28 @@ async def updateimage(ctx, game_id: str):
             mid_y2 = mid_y + 50  # 高さ調整
 
             # ===== teamプレイヤー1 =====
-            name1 = ocr_crop(rslt_img, (680, y1, 930, y2), "--psm 7")
+            name1 = ocr_crop(rslt_img, (680, y1, 930, y2), "--psm 7 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-")
             k1 = ocr_crop(rslt_img, (1070, y1, 1120, y2), "--psm 7")
             d1 = ocr_crop(rslt_img, (1120, y1, 1170, y2), "--psm 7")
             a1 = ocr_crop(rslt_img, (1170, y1, 1220, y2), "--psm 7")
-            rm1 = ocr_crop(rslt_img, (930, y1, 1070, y2), "--psm 7 -c tessedits_char_whitelist=0123456789")  # MVPは数字のみ
+            rm1 = ocr_crop(rslt_img, (930, y1, 1070, y2), "--psm 7 -c tessedit_char_whitelist=0123456789")  # MVPは数字のみ
 
             # ===== teamプレイヤー2 =====
-            name2 = ocr_crop(rslt_img, (680, y3, 930, y4), "--psm 7")
+            name2 = ocr_crop(rslt_img, (680, y3, 930, y4), "--psm 7 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-")
             k2 = ocr_crop(rslt_img, (1070, y3, 1120, y4), "--psm 7")
             d2 = ocr_crop(rslt_img, (1120, y3, 1170, y4), "--psm 7")
             a2 = ocr_crop(rslt_img, (1170, y3, 1220, y4), "--psm 7")
-            rm2 = ocr_crop(rslt_img, (930, y3, 1070, y4), "--psm 7 -c tessedits_char_whitelist=0123456789")  # MVPは数字のみ
+            rm2 = ocr_crop(rslt_img, (930, y3, 1070, y4), "--psm 7 -c tessedit_char_whitelist=0123456789")  # MVPは数字のみ
+
+            n1 = _clean_player_name(name1)
+            n2 = _clean_player_name(name2)
+            if not n1 and not n2:
+                empty_team_streak += 1
+                if empty_team_streak >=2:
+                    break
+            else:
+                empty_team_streak = 0
+
 
             # ===== チーム情報（中央で取得） =====
             avg_win_time_text = ocr_crop(rslt_img, (1230, mid_y, 1330, mid_y2), "--psm 7")
@@ -251,12 +275,17 @@ async def updateimage(ctx, game_id: str):
 
             team_index = i // 2
             avg_win_time = _safe_parse_time(avg_win_time_text)
-            if avg_win_time is None and "parse_int" in globals():
+            if avg_win_time is None and "parse_time" in globals():
                     avg_win_time = parse_int(avg_win_time_text)
+            if avg_win_time is None:
+                avg_win_time = 0
 
             score = _safe_parse_int(score_text)
             if score is None and "parse_int" in globals():
                 score = parse_int(score_text)
+            if score is None:
+                score = 0
+
 
             # ===== プレイヤー登録 =====
             player_rows = (
@@ -265,18 +294,34 @@ async def updateimage(ctx, game_id: str):
             )
             for row in player_rows:
                 name, k, d, a, rm = _normalize_player_row(row)
-                if not name:
+                if not name or len(name) < 2:
                     continue
 
-                kills, deaths, assists, rounds_mvp = parse_kda(f"{k} {d} {a} {rm}")
+                kills = _parse_cell_int(k,default=None)
+                deaths = _parse_cell_int(d, default=None)
+                assists = _parse_cell_int(a, default=None)
+
+                if None in (kills, deaths, assists):
+                    k2, d2, a2 = parse_kda(f"{k} {d} {a}")
+                    kills = kills if kills is not None else k2
+                    deaths = deaths if deaths is not None else d2
+                    assists = assists if assists is not None else a2
+
+                if not all(isinstance(v, int) for v in (kills, deaths, assists)):
+                    continue
+
+                rounds_mvp = _safe_parse_int(rm)
+                if rounds_mvp is None:
+                    rounds_mvp = 0
                 players.append({
                     "ingame_name": name,
-                    "kills": kills or 0,
-                    "deaths": deaths or 0,
-                    "assists": assists or 0,
-                    "rounds_mvp": rounds_mvp or 0,
-                    "avg_win_time": avg_win_time or 0,
-                    "score": score or 0
+                    "kills": kills ,
+                    "deaths": deaths ,
+                    "assists": assists ,
+                    "score": score,
+                    "avg_win_time": avg_win_time ,
+                    "team_index": team_index ,
+                    "rounds_mvp": rounds_mvp 
                 })
 
         data = load_data()
