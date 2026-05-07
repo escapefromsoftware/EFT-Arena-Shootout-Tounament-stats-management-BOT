@@ -149,10 +149,14 @@ def ocr_crop(image, box, config):
     """crop領域をOCRしてテキストを返す"""
     cropped = image.crop(box)
 
-    gray = cropped.convert("L")
-    binary = gray.point(lambda p: 255 if p > 160 else 0, mode="1")
+    scale = 3.0
+    w, h = cropped.size
+    upscaled = cropped.resize((max(1, int(w * scale)), max(1, int(h * scale))), PILImage.Resampling.LANCZOS)
+    gray = upscaled.convert("L")
 
-    text = pytesseract.image_to_string(binary, lang="eng", config=config, timeout=4)
+    binary = gray.point(lambda p: 255 if p > 120 else 0, mode="1")
+
+    text = pytesseract.image_to_string(binary, lang="eng", config=config, timeout=5)
     return (text or "").strip()
 
 def _clean_player_name(text):
