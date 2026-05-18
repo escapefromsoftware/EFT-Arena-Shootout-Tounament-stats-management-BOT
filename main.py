@@ -17,6 +17,7 @@ import traceback
 import cv2
 import numpy as np
 from PIL import Image as PILImage
+import asyncio
 
 pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 
@@ -78,11 +79,6 @@ def get_team_by_name(tournament, team_name):
 def get_unassigned_players(tournament):
     return [(player_id, player) for player_id, player in tournament["players"].items() if not player.get("ingame_name")]
 
-def ocr_crop(image, box, config):
-    cropped = image.crop(box)
-    text = pytesseract.image_to_string(cropped, lang="eng", config=config)
-    return text.strip()
-
 def parse_kda(text: str):
     nums = re.findall(r"\d+", text)
     if len(nums) >= 3:
@@ -107,12 +103,19 @@ def parse_time(text: str):
     
 def _safe_parse_int(text):
     """OCRのノイズを除去して整数を抽出数字がなければNoneを返す"""
-    digits = re.sub(r"\D", "", text or "")
+    digits = re.sub(r"\D", "", _coerce_text(text))
     return int(digits) if digits else None
+
+def _ocr_text_score(text):
+    t = _coerce_text(text).strip()
+    # 英数字/アンダースコアを多く含む結果を優先
+    core = re.sub(r"[^A-Za-z0-9_]", "", t)
+    return len(core)
+
 
 def _safe_parse_time(text):
     """OCRのノイズを許容して秒数(float)に変換"""
-    raw = (text or "").replace(" ", "").replace(",", ".").replace("@", "0")
+    raw = _coerce_text(text).replace(" ", "").replace(",", ".").replace("@", "0")
     cleaned = re.sub(r"[^\d.:]", "", raw)
 
     if ":" in cleaned:
@@ -141,12 +144,12 @@ def _normalize_player_row(row):
         if len(items) < 5:
             items += [""] * (5 - len(items))
         name, k, d, a, rm = items[:5]
-        return (str(name).strip(), k, d, a, rm)
+        return (_coerce_text(name).strip(), k, d, a, rm)
     
     return ("", "", "", "", "")
 
-def ocr_crop(image, box, config):
-    """crop領域をOCRしてテキストを返す"""
+def _ocr_crop_sync(image, box, config):
+    """crop領域を複数前処理/複数設定でOCRし、最良テキストを返す"""
     cropped = image.crop(box)
 
     scale = 3.0
@@ -154,14 +157,61 @@ def ocr_crop(image, box, config):
     upscaled = cropped.resize((max(1, int(w * scale)), max(1, int(h * scale))), PILImage.Resampling.LANCZOS)
     gray = upscaled.convert("L")
 
-    binary = gray.point(lambda p: 255 if p > 120 else 0, mode="1")
+    # フィールド種別に応じて試行回数を削減（タイムアウト対策）
+    is_numeric_field = "tessedit_char_whitelist=0123456789" in config
 
-    text = pytesseract.image_to_string(binary, lang="eng", config=config, timeout=5)
-    return (text or "").strip()
+    if is_numeric_field:
+        thresholds = (130, 150)
+        use_invert = False
+        psm_variants = ("--psm 7",)
+        timeout_sec = 3
+    else:
+        thresholds = (125, 145, 165)
+        use_invert = True
+        psm_variants = ("--psm 7", "--psm 8")
+        timeout_sec = 5
+
+    variants = [gray]
+    for th in thresholds:
+        b = gray.point(lambda p, t=th: 255 if p > t else 0, mode="1")
+        variants.append(b)
+        if use_invert:
+            variants.append(PILImage.eval(b.convert("L"), lambda p: 255 - p))
+
+    best = ""
+    best_score = -1
+
+    for img in variants:
+        for psm in psm_variants:
+            cfg = f"{psm} {config}" if "--psm" not in config else config
+            try:
+                txt = pytesseract.image_to_string(img, lang="eng", config=cfg, timeout=timeout_sec)
+            except Exception:
+                txt = ""
+
+            score = _ocr_text_score(txt)
+            if score > best_score:
+                best = txt
+                best_score = score
+
+    return (best or "").strip()
+
+
+def ocr_crop(image, box, config):
+    """同期版OCRヘルパー（他所から直接呼ばれてもcoroutineにならない）"""
+    return _ocr_crop_sync(image, box, config)
+
+async def ocr_crop_async(image, box, config):
+    """非同期コンテキスト向け：OCRを別スレッドで実行"""
+    return await asyncio.to_thread(_ocr_crop_sync, image, box, config)
+
 
 def _clean_player_name(text):
     """プレイヤー名OCRのノイズを軽く正規化"""
-    raw = (text or "").strip()
+    if asyncio.iscoroutine(text):
+        return ""
+    
+    raw = _coerce_text(text).strip()
     raw = raw.replace("|", "l").replace("I", "i")
     cleaned = re.sub(r"[^A-Za-z0-9_]+", "", raw)
     return cleaned
@@ -169,6 +219,14 @@ def _clean_player_name(text):
 def _parse_cell_int(text, default=0):
     v = _safe_parse_int(text)
     return v if isinstance(v, int) else default
+
+def _coerce_text(value):
+    """coroutine混入時の防御込みで文字列化"""
+    if asyncio.iscoroutine(value):
+        return ""
+    
+    return str(value or "")
+
 
 @bot.command(name="commands")
 async def help_command(ctx):
@@ -217,7 +275,7 @@ async def updateimage(ctx, game_id: str):
         return
     
     try:
-        
+
         attachment = ctx.message.attachments[0]
 
         async with aiohttp.ClientSession() as session:
@@ -246,21 +304,21 @@ async def updateimage(ctx, game_id: str):
             mid_y2 = mid_y + 50  # 高さ調整
 
             # ===== teamプレイヤー1 =====
-            name1 = ocr_crop(rslt_img, (680, y1, 930, y2), "--psm 7 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-")
-            k1 = ocr_crop(rslt_img, (1070, y1, 1120, y2), "--psm 7")
-            d1 = ocr_crop(rslt_img, (1120, y1, 1170, y2), "--psm 7")
-            a1 = ocr_crop(rslt_img, (1170, y1, 1220, y2), "--psm 7")
-            rm1 = ocr_crop(rslt_img, (930, y1, 1070, y2), "--psm 7 -c tessedit_char_whitelist=0123456789")  # MVPは数字のみ
+            name1 = await ocr_crop_async(rslt_img, (680, y1, 930, y2), "--psm 7 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-")
+            k1 = await ocr_crop_async(rslt_img, (1070, y1, 1120, y2), "--psm 7")
+            d1 = await ocr_crop_async(rslt_img, (1120, y1, 1170, y2), "--psm 7")
+            a1 = await ocr_crop_async(rslt_img, (1170, y1, 1220, y2), "--psm 7")
+            rm1 = await ocr_crop_async(rslt_img, (930, y1, 1070, y2), "--psm 7 -c tessedit_char_whitelist=0123456789")  # MVPは数字のみ
 
             # ===== teamプレイヤー2 =====
-            name2 = ocr_crop(rslt_img, (680, y3, 930, y4), "--psm 7 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-")
-            k2 = ocr_crop(rslt_img, (1070, y3, 1120, y4), "--psm 7")
-            d2 = ocr_crop(rslt_img, (1120, y3, 1170, y4), "--psm 7")
-            a2 = ocr_crop(rslt_img, (1170, y3, 1220, y4), "--psm 7")
-            rm2 = ocr_crop(rslt_img, (930, y3, 1070, y4), "--psm 7 -c tessedit_char_whitelist=0123456789")  # MVPは数字のみ
+            name2 = await ocr_crop_async(rslt_img, (680, y3, 930, y4), "--psm 7 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-")
+            k2 = await ocr_crop_async(rslt_img, (1070, y3, 1120, y4), "--psm 7")
+            d2 = await ocr_crop_async(rslt_img, (1120, y3, 1170, y4), "--psm 7")
+            a2 = await ocr_crop_async(rslt_img, (1170, y3, 1220, y4), "--psm 7")
+            rm2 = await ocr_crop_async(rslt_img, (930, y3, 1070, y4), "--psm 7 -c tessedit_char_whitelist=0123456789")  # MVPは数字のみ
 
-            n1 = _clean_player_name(name1)
-            n2 = _clean_player_name(name2)
+            n1 = _clean_player_name(name1) or (name1 or "").strip()
+            n2 = _clean_player_name(name2) or (name2 or "").strip()
             if not n1 and not n2:
                 empty_team_streak += 1
                 if empty_team_streak >=2:
@@ -311,7 +369,7 @@ async def updateimage(ctx, game_id: str):
                     deaths = deaths if deaths is not None else d2
                     assists = assists if assists is not None else a2
 
-                if not all(isinstance(v, int) for v in (kills, deaths, assists)):
+                if kills is None and deaths is None and assists is None:
                     continue
 
                 rounds_mvp = _safe_parse_int(rm)
