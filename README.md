@@ -8,7 +8,7 @@
 ## 使い方
 Discordの以下の招待リンクからメッセージの送信、メッセージの管理、ファイル添付、メッセージ履歴を読む、全員宛にメンション
 スラッシュコマンドを使用の権限を付けてサーバーに招待
-https://discord.com/oauth2/authorize?client_id=1496700919071379537&permissions=2147723264&integration_type=0&scope=bot
+https://discord.com/oauth2/authorize?client_id=1496700919071379537&permissions=6755916985120848&integration_type=0&scope=bot
 
 ファイル構成は以下のように行ってください
 project/
