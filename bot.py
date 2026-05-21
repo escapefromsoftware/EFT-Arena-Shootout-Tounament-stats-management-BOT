@@ -34,6 +34,7 @@ DATA_FILE = "tournament_data.json"
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
+BOT_adiminater_ID = 721546801743790110  # 管理者ID。コマンド使用制限などに利用予定
 
 
 # =========================
@@ -818,6 +819,21 @@ async def send_long(ctx, message, limit=1900):
         await ctx.send(chunk)
 
 
+def adimin_check():
+    """コマンド実行者が管理者かどうかをチェックするデコレーター。"""
+    async def predicate(ctx):
+
+        if ctx.author.id == BOT_adiminater_ID:
+            return True
+        
+        if ctx.author.guild_permissions.administrator:
+            return True
+        
+        return False
+    
+    return commands.check(predicate)
+
+
 # =========================
 # Botイベント
 # =========================
@@ -951,7 +967,7 @@ def _apply_parsed_players_to_data(tournament, parsed_players):
 
 
 @bot.command(name="checkimage")
-@commands.has_permissions(administrator=True)
+@adimin_check()
 async def checkimage(ctx, game_id: str = None):
     """画像添付からOCR結果だけ表示。保存はしない。"""
     try:
@@ -1007,7 +1023,7 @@ async def checkimage(ctx, game_id: str = None):
 
 
 @bot.command(name="updateimage")
-@commands.has_permissions(administrator=True)
+@adimin_check()
 async def updateimage(ctx, game_id: str):
     """画像添付からOCRでプレイヤーのKDA/MVP/Score/AvgWinTimeを読み取り更新。"""
     try:
@@ -1123,7 +1139,7 @@ async def playerstats(ctx, game_id: str, discord_user: discord.Member):
 
 
 @bot.command(name="updatestats")
-@commands.has_permissions(administrator=True)
+@adimin_check()
 async def updatestats(ctx, game_id: str, discord_user: discord.Member):
     data = load_data()
     tournament = get_tournament(data, game_id)
@@ -1174,7 +1190,7 @@ async def updatestats(ctx, game_id: str, discord_user: discord.Member):
 
 
 @bot.command(name="setplayer")
-@commands.has_permissions(administrator=True)
+@adimin_check()
 async def setplayer(ctx, game_id: str, discord_user: discord.Member, *, ingame_name: str):
     data = load_data()
     tournament = get_tournament(data, game_id)
@@ -1206,7 +1222,7 @@ async def setplayer(ctx, game_id: str, discord_user: discord.Member, *, ingame_n
 
 
 @bot.command(name="unassign")
-@commands.has_permissions(administrator=True)
+@adimin_check()
 async def unassign(ctx, game_id: str, discord_user: discord.Member):
     data = load_data()
     tournament = get_tournament(data, game_id)
@@ -1222,7 +1238,7 @@ async def unassign(ctx, game_id: str, discord_user: discord.Member):
 
 
 @bot.command(name="remakeplayer")
-@commands.has_permissions(administrator=True)
+@adimin_check()
 async def remakeplayer(ctx, game_id: str, old_ingame_name: str, *, new_ingame_name: str):
     data = load_data()
     tournament = get_tournament(data, game_id)
@@ -1238,7 +1254,7 @@ async def remakeplayer(ctx, game_id: str, old_ingame_name: str, *, new_ingame_na
 
 
 @bot.command(name="addplayer")
-@commands.has_permissions(administrator=True)
+@adimin_check()
 async def addplayer(ctx, game_id: str, discord_user: discord.Member, *, ingame_name: str):
     data = load_data()
     tournament = get_tournament(data, game_id)
@@ -1267,7 +1283,7 @@ async def addplayer(ctx, game_id: str, discord_user: discord.Member, *, ingame_n
 
 
 @bot.command(name="removeplayer")
-@commands.has_permissions(administrator=True)
+@adimin_check()
 async def removeplayer(ctx, game_id: str, discord_user: discord.Member):
     data = load_data()
     tournament = get_tournament(data, game_id)
@@ -1306,7 +1322,7 @@ async def showplayers(ctx, game_id: str):
 
 
 @bot.command(name="resetstats")
-@commands.has_permissions(administrator=True)
+@adimin_check()
 async def resetstats(ctx, game_id: str, discord_user: discord.Member):
     data = load_data()
     tournament = get_tournament(data, game_id)
@@ -1331,7 +1347,7 @@ async def resetstats(ctx, game_id: str, discord_user: discord.Member):
 
 
 @bot.command(name="resetkda")
-@commands.has_permissions(administrator=True)
+@adimin_check()
 async def resetkda(ctx, game_id: str):
     data = load_data()
     tournament = get_tournament(data, game_id)
@@ -1352,7 +1368,7 @@ async def resetkda(ctx, game_id: str):
 
 
 @bot.command(name="resetdata")
-@commands.has_permissions(administrator=True)
+@adimin_check()
 async def resetdata(ctx, game_id: str):
     data = load_data()
     data["tournaments"][game_id] = {"players": {}, "teams": {}}
@@ -1401,7 +1417,7 @@ async def rankings(ctx, game_id: str, stat_type: str = "KDA"):
 
 
 @bot.command(name="maketeam")
-@commands.has_permissions(administrator=True)
+@adimin_check()
 async def maketeam(ctx, game_id: str, team_name: str, *discord_users: discord.Member):
     data = load_data()
     tournament = get_tournament(data, game_id)
@@ -1468,7 +1484,7 @@ async def teamstats(ctx, game_id: str, team_name: str):
 
 
 @bot.command(name="addteam")
-@commands.has_permissions(administrator=True)
+@adimin_check()
 async def addteam(ctx, game_id: str, team_name: str, discord_user: discord.Member):
     data = load_data()
     tournament = get_tournament(data, game_id)
@@ -1494,7 +1510,7 @@ async def addteam(ctx, game_id: str, team_name: str, discord_user: discord.Membe
 
 
 @bot.command(name="removeteam")
-@commands.has_permissions(administrator=True)
+@adimin_check()
 async def removeteam(ctx, game_id: str, team_name: str, discord_user: discord.Member):
     data = load_data()
     tournament = get_tournament(data, game_id)
@@ -1520,7 +1536,7 @@ async def removeteam(ctx, game_id: str, team_name: str, discord_user: discord.Me
 
 
 @bot.command(name="deleteteam")
-@commands.has_permissions(administrator=True)
+@adimin_check()
 async def deleteteam(ctx, game_id: str, team_name: str):
     data = load_data()
     tournament = get_tournament(data, game_id)
@@ -1540,7 +1556,7 @@ async def deleteteam(ctx, game_id: str, team_name: str):
 
 
 @bot.command(name="exportstats")
-@commands.has_permissions(administrator=True)
+@adimin_check()
 async def exportstats(ctx, game_id: str):
     data = load_data()
     tournament = get_tournament(data, game_id)
@@ -1554,7 +1570,7 @@ async def exportstats(ctx, game_id: str):
 
 
 @bot.command(name="importstats")
-@commands.has_permissions(administrator=True)
+@adimin_check()
 async def importstats(ctx, game_id: str, json_url: str):
     try:
         async with aiohttp.ClientSession() as session:
@@ -1572,7 +1588,7 @@ async def importstats(ctx, game_id: str, json_url: str):
 
 
 @bot.command(name="makegame")
-@commands.has_permissions(administrator=True)
+@adimin_check()
 async def makegame(ctx, game_id: str, *teams: str):
     data = load_data()
     tournament = get_tournament(data, game_id)
@@ -1603,7 +1619,7 @@ async def gamestats(ctx, game_id: str):
 
 
 @bot.command(name="deletegame")
-@commands.has_permissions(administrator=True)
+@adimin_check()
 async def deletegame(ctx, game_id: str):
     data = load_data()
 
@@ -1618,15 +1634,15 @@ async def deletegame(ctx, game_id: str):
 
 # 画像生成はまだ未実装のまま置いておく
 @bot.command(name="image")
-@commands.has_permissions(administrator=True)
+@adimin_check()
 async def image(ctx, game_id: str, stat_type: str):
     await ctx.send(f"画像生成機能は未実装です (ゲーム: {game_id}, タイプ: {stat_type})。")
 
 
 @bot.command(name="backimage")
-@commands.has_permissions(administrator=True)
-async def backimage(ctx):
-    await ctx.send("背景画像設定機能は未実装です。")
+@adimin_check()
+async def backimage(ctx, game_id: str):
+    await ctx.send(f"背景画像設定機能は未実装です (ゲーム: {game_id})。")
 
 
 if __name__ == "__main__":
