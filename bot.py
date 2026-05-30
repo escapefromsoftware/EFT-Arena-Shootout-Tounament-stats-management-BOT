@@ -1120,6 +1120,7 @@ async def playerstats(ctx, game_id: str, discord_user: discord.Member):
     embed.add_field(name="Kills", value=player["kills"], inline=True)
     embed.add_field(name="Deaths", value=player["deaths"], inline=True)
     embed.add_field(name="Assists", value=player["assists"], inline=True)
+    embed.add_field(name="K/D Ratio", value=f"{player['kills']}/{player['deaths']}" if player["deaths"] > 0 else "N/A", inline=True)
     embed.add_field(name="Score", value=player["score"], inline=True)
     embed.add_field(name="Rounds MVP", value=player.get("rounds_MVP", 0), inline=True)
     embed.add_field(name="Matches MVP", value=player.get("Matches_MVP", 0), inline=True)
@@ -1377,15 +1378,15 @@ async def resetdata(ctx, game_id: str):
 
 
 @bot.command(name="rankings")
-async def rankings(ctx, game_id: str, stat_type: str = "KDA"):
+async def rankings(ctx, game_id: str, stat_type: str = "KD"):
     data = load_data()
     tournament = get_tournament(data, game_id)
     players = [ensure_player_defaults(p) for p in tournament.get("players", {}).values()]
 
     st = stat_type.upper()
 
-    if st == "KDA":
-        players.sort(key=lambda p: (p["kills"] + p["assists"]) / max(p["deaths"], 1), reverse=True)
+    if st == "KD":
+        players.sort(key=lambda p: (p["kills"] ) / max(p["deaths"], 1), reverse=True)
     elif st == "KILLS":
         players.sort(key=lambda p: p["kills"], reverse=True)
     elif st == "SCORE":
@@ -1394,8 +1395,35 @@ async def rankings(ctx, game_id: str, stat_type: str = "KDA"):
         players.sort(key=lambda p: p.get("rounds_MVP", 0) + p.get("Matches_MVP", 0), reverse=True)
     elif st == "AVG_WIN_TIME":
         players.sort(key=lambda p: p.get("AVG_WIN_time", float("inf")))
+    elif st == "KDA":
+        players.sort(key=lambda p: (p["kills"], -p["deaths"], p["assists"]), reverse=True)
+    elif st == "teamKD":
+        # チームごとの平均K/Dでソート
+        team_kd = {}
+        for p in players:
+            team_id = p.get("team_id")
+            if team_id:
+                kd = (p["kills"] ) / max(p["deaths"], 1)
+                if team_id not in team_kd:
+                    team_kd[team_id] = []
+                team_kd[team_id].append(kd)
+
+        team_avg_kd = {team_id: sum(kds) / len(kds) for team_id, kds in team_kd.items()}
+        players.sort(key=lambda p: team_avg_kd.get(p.get("team_id"), 0), reverse=True)
+    elif st == "teamscore":
+        # チームごとのスコアでソート
+        team_score = {}
+        for p in players:
+            team_id = p.get("team_id")
+            if team_id:
+                score = p["score"]
+                if team_id not in team_score:
+                    team_score[team_id] = 0
+                team_score[team_id] += score
+
+        players.sort(key=lambda p: team_score.get(p.get("team_id"), 0), reverse=True)
     else:
-        await ctx.send("❌ 無効なstat_typeです。KDA、KILLS、SCORE、MVP、AVG_WIN_TIMEを指定してください。")
+        await ctx.send("❌ 無効なstat_typeです。KD、KILLS、SCORE、MVP、AVG_WIN_TIME、teamKD、teamscoreを指定してください。")
         return
 
     lines = [f"**{st}ランキング (ゲーム: {game_id}):**"]
@@ -1409,8 +1437,21 @@ async def rankings(ctx, game_id: str, stat_type: str = "KDA"):
             value = player.get("rounds_MVP", 0) + player.get("Matches_MVP", 0)
         elif st == "KILLS":
             value = player["kills"]
+        elif st == "KDA":
+             value = f"{player['kills']}/{player['deaths']}/{player['assists']} ({player['kills'] / max(player['deaths'], 1):.2f})"
+        elif st == "KD":
+            value = f"{player['kills']}/{player['deaths']} ({player['kills'] / max(player['deaths'], 1):.2f})"
+        elif st == "teamKD":
+            team_id = player.get("team_id")
+            team_name = tournament["teams"].get(team_id, {}).get("team_name", "N/A") if team_id else "N/A"
+            value = f"{team_name} (平均K/D: {((player['kills'] ) / max(player['deaths'], 1)):.2f})"
+        elif st == "teamscore":
+            team_id = player.get("team_id")
+            team_name = tournament["teams"].get(team_id, {}).get("team_name", "N/A") if team_id else "N/A"
+            team_score = sum(p["score"] for p in players if p.get("team_id") == team_id)
+            value = f"{team_name} (合計スコア: {team_score})"
         else:
-            value = f"{player['kills']}/{player['deaths']}/{player['assists']}"
+            value = f"{player['kills']}/{player['deaths']} ({player['kills'] / max(player['deaths'], 1):.2f})"
         lines.append(f"{i}. {name}: {value}")
 
     await send_long(ctx, "\n".join(lines))
@@ -1476,6 +1517,7 @@ async def teamstats(ctx, game_id: str, team_name: str):
     embed.add_field(name="Total Kills", value=total_kills, inline=True)
     embed.add_field(name="Total Deaths", value=total_deaths, inline=True)
     embed.add_field(name="Total Assists", value=total_assists, inline=True)
+    embed.add_field(name="K/D Ratio", value=f"{total_kills}/{total_deaths} ({total_kills / max(total_deaths, 1):.2f})" if total_deaths > 0 else "N/A", inline=True)
     embed.add_field(name="Total Score", value=total_score, inline=True)
     embed.add_field(name="Total MVP", value=total_mvp, inline=True)
     embed.add_field(name="Members", value=", ".join(member_list) or "なし", inline=False)
