@@ -82,7 +82,7 @@ COLS = {
     "k": (1078, 1110),
     "d": (1132, 1160),
     "a": (1185, 1212),
-    "avg_win_time": (1245, 1315),
+    "avg_win_time": (1260, 1315),
     "score": (1350, 1392),
 }
 
@@ -972,6 +972,7 @@ async def checkimage(ctx, game_id: str = None):
     """画像添付からOCR結果だけ表示。保存はしない。"""
     try:
         rslt_img = await _download_first_attachment_image(ctx)
+        await ctx.send("🔍 OCRで画像を解析中...少々お待ちください。")
         if rslt_img is None:
             return
 
@@ -1026,6 +1027,7 @@ async def checkimage(ctx, game_id: str = None):
 @adimin_check()
 async def updateimage(ctx, game_id: str):
     """画像添付からOCRでプレイヤーのKDA/MVP/Score/AvgWinTimeを読み取り更新。"""
+    await ctx.send("🔍 OCRで画像を解析中...少々お待ちください。")
     try:
         rslt_img = await _download_first_attachment_image(ctx)
         if rslt_img is None:
@@ -1145,6 +1147,12 @@ async def updatestats(ctx, game_id: str, discord_user: discord.Member):
     data = load_data()
     tournament = get_tournament(data, game_id)
     player_id, player = get_player_by_discord_id(tournament, discord_id=discord_user.id)
+    #5分入力がなければタイムアウト
+    try:
+        message = await bot.wait_for("message", check=lambda m: m.author == ctx.author and m.channel == ctx.channel, timeout=300)
+    except asyncio.TimeoutError:
+        await ctx.send("❌ 入力がタイムアウトしました。もう一度コマンドを実行してください。")
+        return
 
     if not player:
         await ctx.send(f"❌ プレイヤー <@{discord_user.id}> が見つかりません (ゲーム: {game_id})。")
@@ -1685,6 +1693,14 @@ async def image(ctx, game_id: str, stat_type: str):
 @adimin_check()
 async def backimage(ctx, game_id: str):
     await ctx.send(f"背景画像設定機能は未実装です (ゲーム: {game_id})。")
+
+#コマンドが不明な場合のエラーハンドリング
+@bot.event
+async def on_command_error(ctx, error):
+    if isinstance(error, commands.CommandNotFound):
+        await ctx.send("❌ コマンドが見つかりません。`!commands` で利用可能なコマンドを確認してください。")
+    else:
+        await ctx.send(f"❌ エラーが発生しました: {error}")
 
 
 if __name__ == "__main__":
