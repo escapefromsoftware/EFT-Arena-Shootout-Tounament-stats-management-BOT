@@ -1706,5 +1706,5 @@ async def on_command_error(ctx, error):
 if __name__ == "__main__":
     if not TOKEN:
         raise RuntimeError(".env に TOKEN がありません。例: TOKEN=xxxxxxxx")
-
+  
     bot.run(TOKEN)
