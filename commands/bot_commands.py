@@ -27,6 +27,11 @@ from data.player_manager import (
     get_player_by_ingame_name, get_player_by_discord_id, get_team_by_name,
     ensure_player_defaults
 )
+from data.match_manager import (
+    get_player_recent_results,
+    get_team_recent_results,
+    save_recent_match,
+)
 from ocr.image_processor import parse_scoreboard_image
 from ocr.name_correction import apply_name_corrections
 from ocr.ocr_utils import scale_box, format_time
@@ -269,6 +274,7 @@ def register_commands(bot):
             parsed_players = apply_name_corrections(parsed_players, tournament)
 
             updated_count, result_msg = _apply_parsed_players_to_data(tournament, parsed_players)
+            save_recent_match(tournament, parsed_players)
 
             save_data(data)
 
@@ -356,6 +362,19 @@ def register_commands(bot):
                 inline=False,
             )
 
+        recent_results = get_player_recent_results(tournament, player_id)
+        if recent_results:
+            recent_lines = [
+                f"{index}. {result['rank']}位 | "
+                f"KDA {result['kills']}/{result['deaths']}/{result['assists']} | "
+                f"Score {result['score']} | MVP {result['rounds_MVP']}"
+                for index, result in enumerate(recent_results, 1)
+            ]
+            recent_text = "\n".join(recent_lines)
+        else:
+            recent_text = "試合履歴はまだありません。"
+
+        embed.add_field(name="直近5試合", value=recent_text, inline=False)
         await ctx.send(embed=embed)
 
     @bot.command(name="updatestats")
@@ -596,7 +615,11 @@ def register_commands(bot):
     async def resetdata(ctx, game_id: str):
         """ゲーム内のプレイヤー/チームデータをリセット。"""
         data = load_data()
-        data["tournaments"][game_id] = {"players": {}, "teams": {}}
+        data["tournaments"][game_id] = {
+            "players": {},
+            "teams": {},
+            "recent_matches": [],
+        }
         save_data(data)
         await ctx.send(f"✅ トーナメントのデータをリセットしました (ゲーム: {game_id})。")
 
@@ -738,6 +761,19 @@ def register_commands(bot):
         embed.add_field(name="Total MVP", value=total_mvp, inline=True)
         embed.add_field(name="Members", value=", ".join(member_list) or "なし", inline=False)
 
+        recent_results = get_team_recent_results(tournament, team_id)
+        if recent_results:
+            recent_lines = [
+                f"{index}. {result['rank']}位 | Score {result['score']} | "
+                f"KDA {result['kills']}/{result['deaths']}/{result['assists']} | "
+                f"AVG {format_time(result['avg_win_time'])}"
+                for index, result in enumerate(recent_results, 1)
+            ]
+            recent_text = "\n".join(recent_lines)
+        else:
+            recent_text = "試合履歴はまだありません。"
+
+        embed.add_field(name="直近5試合", value=recent_text, inline=False)
         await ctx.send(embed=embed)
 
     @bot.command(name="addteam")

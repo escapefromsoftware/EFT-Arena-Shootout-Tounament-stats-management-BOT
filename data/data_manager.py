@@ -35,4 +35,11 @@ def save_data(data):
 
 def get_tournament(data, game_id):
     """ゲームIDからトーナメントデータを取得。なければ作る。"""
-    return data["tournaments"].setdefault(game_id, {"players": {}, "teams": {}})
+    tournament = data["tournaments"].setdefault(
+        game_id,
+        {"players": {}, "teams": {}, "recent_matches": []},
+    )
+    tournament.setdefault("players", {})
+    tournament.setdefault("teams", {})
+    tournament.setdefault("recent_matches", [])
+    return tournament
