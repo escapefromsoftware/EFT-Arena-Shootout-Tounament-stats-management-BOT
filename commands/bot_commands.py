@@ -170,7 +170,7 @@ def register_commands(bot):
             "!resetstats <game_id> <@discord_user> - プレイヤーのスタッツをリセット\n"
             "!resetkda <game_id> - 全プレイヤーのKDAなどをリセット\n"
             "!resetdata <game_id> - トーナメントデータをリセット\n"
-            "!rankings <game_id> <KDA|KILLS|SCORE|MVP|AVG_WIN_TIME> - ランキング表示\n"
+            "!rankings <game_id> <KD|KDA|KILLS|SCORE|MVP|AVG_WIN_TIME> - ランキング表示\n"
             "!addplayer <game_id> <@discord_user> <ingame_name> - プレイヤー追加\n"
             "!removeplayer <game_id> <@discord_user> - プレイヤー削除\n"
             "!showplayers <game_id> - 参加プレイヤー一覧\n"
