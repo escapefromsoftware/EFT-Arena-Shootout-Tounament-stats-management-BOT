@@ -1,3 +1,6 @@
 tournament_data.json
 .env
 .vscode/
+__pycache__/
+*.py[cod]
+memo
