@@ -10,11 +10,11 @@ _project_root = Path(__file__).parent.parent
 if str(_project_root) not in sys.path:
     sys.path.insert(0, str(_project_root))
 
-import asyncio
 import json
 import traceback
 import uuid
 from io import BytesIO
+from typing import Optional
 
 import aiohttp
 import discord
@@ -42,25 +42,16 @@ def admin_check():
     async def predicate(ctx):
         if ctx.author.id == BOT_ADMIN_ID:
             return True
-        if ctx.author.guild_permissions.administrator:
+        permissions = getattr(ctx.author, "guild_permissions", None)
+        if permissions and permissions.administrator:
             return True
         return False
     return commands.check(predicate)
 
 
 async def _download_first_attachment_image(ctx):
-    """メッセージの最初の添付画像をダウンロードして返す。"""
-    if not ctx.message.attachments:
-        await ctx.send("❌ 画像を添付してください。")
-        return None
-
-    attachment = ctx.message.attachments[0]
-
-    async with aiohttp.ClientSession() as session:
-        async with session.get(attachment.url) as resp:
-            resp.raise_for_status()
-            image_data = await resp.read()
-
+    """Discordの添付画像をダウンロードして返す。"""
+    image_data = await ctx.read()
     return PILImage.open(BytesIO(image_data)).convert("RGB")
 
 
@@ -152,48 +143,52 @@ async def send_long(ctx, message, limit=1900):
 def register_commands(bot):
     """すべてのコマンドを登録する。"""
 
-    @bot.command(name="commands")
+    @bot.hybrid_command(name="commands", description="コマンド一覧を表示します")
     async def help_command(ctx):
         """コマンド一覧を表示。"""
         await ctx.send(
             "📊 **トーナメントスタッツ管理Botのコマンド一覧** 📊\n"
             "```markdown\n"
-            "!commands - コマンド一覧を表示\n"
-            "!updateimage <game_id> - 画像添付からOCRでスタッツを更新\n"
-            "!checkimage [game_id] - OCR結果だけ表示。game_id指定時だけ登録済み名前に補正\n"
-            "!debugocr - 画像添付から座標確認用のcrop画像を返す\n"
-            "!updatestats <game_id> <@discord_user> - プレイヤーのスタッツを手動更新\n"
-            "!setplayer <game_id> <@discord_user> <ingame_name> - インゲーム名を設定\n"
-            "!unassign <game_id> <@discord_user> - インゲーム名を解除\n"
-            "!remakeplayer <game_id> <old_ingame_name> <new_ingame_name> - ingame_nameを修正\n"
-            "!playerstats <game_id> <@discord_user> - プレイヤーのスタッツを表示\n"
-            "!resetstats <game_id> <@discord_user> - プレイヤーのスタッツをリセット\n"
-            "!resetkda <game_id> - 全プレイヤーのKDAなどをリセット\n"
-            "!resetdata <game_id> - トーナメントデータをリセット\n"
-            "!rankings <game_id> <KD|KDA|KILLS|SCORE|MVP|AVG_WIN_TIME> - ランキング表示\n"
-            "!addplayer <game_id> <@discord_user> <ingame_name> - プレイヤー追加\n"
-            "!removeplayer <game_id> <@discord_user> - プレイヤー削除\n"
-            "!showplayers <game_id> - 参加プレイヤー一覧\n"
-            "!maketeam <game_id> <team_name> <@user1> <@user2> ... - チーム作成\n"
-            "!teamstats <game_id> <team_name> - チームスタッツ表示\n"
-            "!addteam <game_id> <team_name> <@discord_user> - チームに追加\n"
-            "!removeteam <game_id> <team_name> <@discord_user> - チームから削除\n"
-            "!deleteteam <game_id> <team_name> - チーム削除\n"
-            "!exportstats <game_id> - JSON出力\n"
-            "!importstats <game_id> <json_url> - JSONインポート\n"
-            "!makegame <game_id> <team1> <team2> ... - ゲーム作成\n"
-            "!gamestats <game_id> - ゲーム概要表示\n"
-            "!deletegame <game_id> - ゲーム削除\n"
+            "/commands - コマンド一覧を表示\n"
+            "/updateimage <game_id> <image> - 画像からOCRでスタッツを更新\n"
+            "/checkimage <image> [game_id] - OCR結果だけ表示。game_id指定時だけ登録済み名前に補正\n"
+            "/debugocr <image> - 座標確認用の画像を返す\n"
+            "/updatestats <game_id> <discord_user> <各スタッツ> - 累計スタッツを手動更新\n"
+            "/setplayer <game_id> <@discord_user> <ingame_name> - インゲーム名を設定\n"
+            "/unassign <game_id> <@discord_user> - インゲーム名を解除\n"
+            "/remakeplayer <game_id> <old_ingame_name> <new_ingame_name> - ingame_nameを修正\n"
+            "/playerstats <game_id> <@discord_user> - プレイヤーのスタッツを表示\n"
+            "/resetstats <game_id> <@discord_user> - プレイヤーのスタッツをリセット\n"
+            "/resetkda <game_id> - 全プレイヤーのKDAなどをリセット\n"
+            "/resetdata <game_id> - トーナメントデータをリセット\n"
+            "/rankings <game_id> <KD|KDA|KILLS|SCORE|MVP|AVG_WIN_TIME> - ランキング表示\n"
+            "/addplayer <game_id> <@discord_user> <ingame_name> - プレイヤー追加\n"
+            "/removeplayer <game_id> <@discord_user> - プレイヤー削除\n"
+            "/showplayers <game_id> - 参加プレイヤー一覧\n"
+            "/maketeam <game_id> <team_name> [user1...user8] - チーム作成\n"
+            "/teamstats <game_id> <team_name> - チームスタッツ表示\n"
+            "/addteam <game_id> <team_name> <@discord_user> - チームに追加\n"
+            "/removeteam <game_id> <team_name> <@discord_user> - チームから削除\n"
+            "/deleteteam <game_id> <team_name> - チーム削除\n"
+            "/exportstats <game_id> - JSON出力\n"
+            "/importstats <game_id> <json_url> - JSONインポート\n"
+            "/makegame <game_id> [team1...team8] - ゲーム作成\n"
+            "/gamestats <game_id> - ゲーム概要表示\n"
+            "/deletegame <game_id> - ゲーム削除\n"
             "```"
         )
 
-    @bot.command(name="checkimage")
+    @bot.hybrid_command(name="checkimage", description="画像をOCR解析します（保存なし）")
     @admin_check()
-    async def checkimage(ctx, game_id: str = None):
+    async def checkimage(
+        ctx,
+        image: discord.Attachment,
+        game_id: Optional[str] = None,
+    ):
         """画像添付からOCR結果だけ表示。保存はしない。"""
         try:
-            rslt_img = await _download_first_attachment_image(ctx)
             await ctx.send("🔍 OCRで画像を解析中...少々お待ちください。")
+            rslt_img = await _download_first_attachment_image(image)
             if rslt_img is None:
                 return
 
@@ -252,20 +247,24 @@ def register_commands(bot):
                 pass
             await ctx.send(f"❌ エラーが発生しました: {e} (場所: {loc})")
 
-    @bot.command(name="updateimage")
+    @bot.hybrid_command(name="updateimage", description="画像からスタッツと試合履歴を更新します")
     @admin_check()
-    async def updateimage(ctx, game_id: str):
+    async def updateimage(
+        ctx,
+        game_id: str,
+        image: discord.Attachment,
+    ):
         """画像添付からOCRでプレイヤーのKDA/MVP/Score/AvgWinTimeを読み取り更新。"""
         await ctx.send("🔍 OCRで画像を解析中...少々お待ちください。")
         try:
-            rslt_img = await _download_first_attachment_image(ctx)
+            rslt_img = await _download_first_attachment_image(image)
             if rslt_img is None:
                 return
 
             parsed_players = await parse_scoreboard_image(rslt_img)
 
             if not parsed_players:
-                await ctx.send("❌ OCRでプレイヤーを読み取れませんでした。先に `!checkimage` で確認してください。")
+                await ctx.send("❌ OCRでプレイヤーを読み取れませんでした。先に `/checkimage` で確認してください。")
                 return
 
             data = load_data()
@@ -292,12 +291,13 @@ def register_commands(bot):
                 pass
             await ctx.send(f"❌ エラーが発生しました: {e} (場所: {loc})")
 
-    @bot.command(name="debugocr")
-    @commands.has_permissions(administrator=True)
-    async def debugocr(ctx):
+    @bot.hybrid_command(name="debugocr", description="OCR対象範囲を画像上に表示します")
+    @admin_check()
+    async def debugocr(ctx, image: discord.Attachment):
         """座標確認用。添付画像にOCR対象の枠を描いて返す。"""
         try:
-            img = await _download_first_attachment_image(ctx)
+            await ctx.defer()
+            img = await _download_first_attachment_image(image)
             if img is None:
                 return
 
@@ -326,7 +326,7 @@ def register_commands(bot):
         except Exception as e:
             await ctx.send(f"❌ debugocrでエラー: {e}")
 
-    @bot.command(name="playerstats")
+    @bot.hybrid_command(name="playerstats", description="プレイヤーのスタッツを表示します")
     async def playerstats(ctx, game_id: str, discord_user: discord.Member):
         """プレイヤーのスタッツを表示。"""
         data = load_data()
@@ -377,64 +377,42 @@ def register_commands(bot):
         embed.add_field(name="直近5試合", value=recent_text, inline=False)
         await ctx.send(embed=embed)
 
-    @bot.command(name="updatestats")
+    @bot.hybrid_command(name="updatestats", description="プレイヤーの累計スタッツを手動更新します")
     @admin_check()
-    async def updatestats(ctx, game_id: str, discord_user: discord.Member):
+    async def updatestats(
+        ctx,
+        game_id: str,
+        discord_user: discord.Member,
+        kills: int,
+        deaths: int,
+        assists: int,
+        score: int,
+        rounds_mvp: int,
+        matches_mvp: int,
+        avg_win_time_seconds: float,
+    ):
         """プレイヤーのスタッツを手動更新。"""
         data = load_data()
         tournament = get_tournament(data, game_id)
         player_id, player = get_player_by_discord_id(tournament, discord_id=discord_user.id)
-        
-        try:
-            message = await bot.wait_for("message", check=lambda m: m.author == ctx.author and m.channel == ctx.channel, timeout=300)
-        except asyncio.TimeoutError:
-            await ctx.send("❌ 入力がタイムアウトしました。もう一度コマンドを実行してください。")
-            return
 
         if not player:
             await ctx.send(f"❌ プレイヤー <@{discord_user.id}> が見つかりません (ゲーム: {game_id})。")
             return
 
         ensure_player_defaults(player)
-        await ctx.send(
-            f"現在のスタッツ: "
-            f"Kills={player['kills']}, Deaths={player['deaths']}, Assists={player['assists']}, "
-            f"Score={player['score']}, Rounds MVP={player.get('rounds_MVP', 0)}, "
-            f"Matches MVP={player.get('Matches_MVP', 0)}, "
-            f"AVG_WIN_time={format_time(player.get('AVG_WIN_time', 0))}\n"
-            "更新したいスタッツを以下の形式で入力してください:\n"
-            "`Kills Deaths Assists Score RoundsMVP MatchesMVP AVG_WIN_time_seconds`\n"
-            "例: `5 2 3 10 1 0 22.370`"
-        )
+        player["kills"] = kills
+        player["deaths"] = deaths
+        player["assists"] = assists
+        player["score"] = score
+        player["rounds_MVP"] = rounds_mvp
+        player["Matches_MVP"] = matches_mvp
+        player["AVG_WIN_time"] = avg_win_time_seconds
 
-        def check(m):
-            return m.author == ctx.author and m.channel == ctx.channel
+        save_data(data)
+        await ctx.send(f"✅ <@{discord_user.id}> のスタッツを更新しました (ゲーム: {game_id})。")
 
-        message = await bot.wait_for("message", check=check)
-
-        try:
-            parts = message.content.split()
-            if len(parts) != 7:
-                raise ValueError("7個の値が必要です")
-
-            kills, deaths, assists, score, rounds_mvp, matches_mvp = map(int, parts[:6])
-            avg_win_time = float(parts[6])
-
-            player["kills"] = kills
-            player["deaths"] = deaths
-            player["assists"] = assists
-            player["score"] = score
-            player["rounds_MVP"] = rounds_mvp
-            player["Matches_MVP"] = matches_mvp
-            player["AVG_WIN_time"] = avg_win_time
-
-            save_data(data)
-            await ctx.send(f"✅ <@{discord_user.id}> のスタッツを更新しました (ゲーム: {game_id})。")
-
-        except ValueError as e:
-            await ctx.send(f"❌ 入力形式が正しくありません: {e}")
-
-    @bot.command(name="setplayer")
+    @bot.hybrid_command(name="setplayer", description="Discordユーザーとゲーム内名を紐付けます")
     @admin_check()
     async def setplayer(ctx, game_id: str, discord_user: discord.Member, *, ingame_name: str):
         """プレイヤーのインゲーム名を設定。"""
@@ -465,7 +443,7 @@ def register_commands(bot):
         save_data(data)
         await ctx.send(f"✅ <@{discord_user.id}> のインゲーム名を '{ingame_name}' に設定しました (ゲーム: {game_id})。")
 
-    @bot.command(name="unassign")
+    @bot.hybrid_command(name="unassign", description="ゲーム内名の紐付けを解除します")
     @admin_check()
     async def unassign(ctx, game_id: str, discord_user: discord.Member):
         """プレイヤーのインゲーム名を解除。"""
@@ -481,7 +459,7 @@ def register_commands(bot):
         save_data(data)
         await ctx.send(f"✅ <@{discord_user.id}> のインゲーム名を解除しました。")
 
-    @bot.command(name="remakeplayer")
+    @bot.hybrid_command(name="remakeplayer", description="登録済みのゲーム内名を修正します")
     @admin_check()
     async def remakeplayer(ctx, game_id: str, old_ingame_name: str, *, new_ingame_name: str):
         """プレイヤーのインゲーム名を修正。"""
@@ -497,7 +475,7 @@ def register_commands(bot):
         save_data(data)
         await ctx.send(f"✅ '{old_ingame_name}' を '{new_ingame_name}' に修正しました。")
 
-    @bot.command(name="addplayer")
+    @bot.hybrid_command(name="addplayer", description="トーナメントへプレイヤーを追加します")
     @admin_check()
     async def addplayer(ctx, game_id: str, discord_user: discord.Member, *, ingame_name: str):
         """プレイヤーを追加。"""
@@ -506,7 +484,7 @@ def register_commands(bot):
 
         _, existing = get_player_by_discord_id(tournament, discord_id=discord_user.id)
         if existing:
-            await ctx.send(f"⚠️ <@{discord_user.id}> はすでに登録されています。`!setplayer`で変更してください。")
+            await ctx.send(f"⚠️ <@{discord_user.id}> はすでに登録されています。`/setplayer`で変更してください。")
             return
 
         player_id = str(uuid.uuid4())
@@ -526,7 +504,7 @@ def register_commands(bot):
         save_data(data)
         await ctx.send(f"✅ <@{discord_user.id}> をプレイヤーリストに追加しました (ゲーム: {game_id})。")
 
-    @bot.command(name="removeplayer")
+    @bot.hybrid_command(name="removeplayer", description="トーナメントからプレイヤーを削除します")
     @admin_check()
     async def removeplayer(ctx, game_id: str, discord_user: discord.Member):
         """プレイヤーを削除。"""
@@ -546,7 +524,7 @@ def register_commands(bot):
         save_data(data)
         await ctx.send(f"✅ <@{discord_user.id}> をプレイヤーリストから削除しました (ゲーム: {game_id})。")
 
-    @bot.command(name="showplayers")
+    @bot.hybrid_command(name="showplayers", description="参加プレイヤー一覧を表示します")
     async def showplayers(ctx, game_id: str):
         """参加プレイヤー一覧を表示。"""
         data = load_data()
@@ -564,7 +542,7 @@ def register_commands(bot):
         else:
             await ctx.send(f"参加プレイヤーはいません (ゲーム: {game_id})。")
 
-    @bot.command(name="resetstats")
+    @bot.hybrid_command(name="resetstats", description="指定プレイヤーのスタッツをリセットします")
     @admin_check()
     async def resetstats(ctx, game_id: str, discord_user: discord.Member):
         """指定プレイヤーのスタッツをリセット。"""
@@ -589,7 +567,7 @@ def register_commands(bot):
         save_data(data)
         await ctx.send(f"✅ <@{discord_user.id}> のスタッツをリセットしました (ゲーム: {game_id})。")
 
-    @bot.command(name="resetkda")
+    @bot.hybrid_command(name="resetkda", description="全プレイヤーのスタッツをリセットします")
     @admin_check()
     async def resetkda(ctx, game_id: str):
         """全プレイヤーのKDA/Score/MVP/AVG_WIN_TIMEをリセット。"""
@@ -610,7 +588,7 @@ def register_commands(bot):
         save_data(data)
         await ctx.send(f"✅ 全プレイヤーのKDA/Score/MVP/AVG_WIN_TIMEをリセットしました (ゲーム: {game_id})。")
 
-    @bot.command(name="resetdata")
+    @bot.hybrid_command(name="resetdata", description="トーナメントデータをリセットします")
     @admin_check()
     async def resetdata(ctx, game_id: str):
         """ゲーム内のプレイヤー/チームデータをリセット。"""
@@ -623,7 +601,7 @@ def register_commands(bot):
         save_data(data)
         await ctx.send(f"✅ トーナメントのデータをリセットしました (ゲーム: {game_id})。")
 
-    @bot.command(name="rankings")
+    @bot.hybrid_command(name="rankings", description="指定項目のランキングを表示します")
     async def rankings(ctx, game_id: str, stat_type: str = "KD"):
         """ランキングを表示。"""
         data = load_data()
@@ -695,12 +673,29 @@ def register_commands(bot):
 
         await send_long(ctx, "\n".join(lines))
 
-    @bot.command(name="maketeam")
+    @bot.hybrid_command(name="maketeam", description="チームを作成してメンバーを追加します")
     @admin_check()
-    async def maketeam(ctx, game_id: str, team_name: str, *discord_users: discord.Member):
+    async def maketeam(
+        ctx,
+        game_id: str,
+        team_name: str,
+        user1: Optional[discord.Member] = None,
+        user2: Optional[discord.Member] = None,
+        user3: Optional[discord.Member] = None,
+        user4: Optional[discord.Member] = None,
+        user5: Optional[discord.Member] = None,
+        user6: Optional[discord.Member] = None,
+        user7: Optional[discord.Member] = None,
+        user8: Optional[discord.Member] = None,
+    ):
         """チームを作成し、指定メンバーを追加。"""
         data = load_data()
         tournament = get_tournament(data, game_id)
+        discord_users = [
+            user
+            for user in (user1, user2, user3, user4, user5, user6, user7, user8)
+            if user is not None
+        ]
 
         _, existing_team = get_team_by_name(tournament, team_name)
         if existing_team:
@@ -721,7 +716,7 @@ def register_commands(bot):
         save_data(data)
         await ctx.send(f"✅ チーム '{team_name}' を作成しました (ゲーム: {game_id})。")
 
-    @bot.command(name="teamstats")
+    @bot.hybrid_command(name="teamstats", description="チームのスタッツを表示します")
     async def teamstats(ctx, game_id: str, team_name: str):
         """チームスタッツを表示。"""
         data = load_data()
@@ -776,7 +771,7 @@ def register_commands(bot):
         embed.add_field(name="直近5試合", value=recent_text, inline=False)
         await ctx.send(embed=embed)
 
-    @bot.command(name="addteam")
+    @bot.hybrid_command(name="addteam", description="プレイヤーをチームへ追加します")
     @admin_check()
     async def addteam(ctx, game_id: str, team_name: str, discord_user: discord.Member):
         """チームにプレイヤーを追加。"""
@@ -802,7 +797,7 @@ def register_commands(bot):
         save_data(data)
         await ctx.send(f"✅ <@{discord_user.id}> をチーム '{team_name}' に追加しました。")
 
-    @bot.command(name="removeteam")
+    @bot.hybrid_command(name="removeteam", description="プレイヤーをチームから外します")
     @admin_check()
     async def removeteam(ctx, game_id: str, team_name: str, discord_user: discord.Member):
         """チームからプレイヤーを削除。"""
@@ -828,7 +823,7 @@ def register_commands(bot):
         save_data(data)
         await ctx.send(f"✅ <@{discord_user.id}> をチーム '{team_name}' から削除しました。")
 
-    @bot.command(name="deleteteam")
+    @bot.hybrid_command(name="deleteteam", description="チームを削除します")
     @admin_check()
     async def deleteteam(ctx, game_id: str, team_name: str):
         """チームを削除。"""
@@ -848,7 +843,7 @@ def register_commands(bot):
         save_data(data)
         await ctx.send(f"✅ チーム '{team_name}' を削除しました。")
 
-    @bot.command(name="exportstats")
+    @bot.hybrid_command(name="exportstats", description="トーナメントデータをJSON出力します")
     @admin_check()
     async def exportstats(ctx, game_id: str):
         """ゲームデータをJSONで出力。"""
@@ -862,11 +857,12 @@ def register_commands(bot):
             buf = BytesIO(text.encode("utf-8"))
             await ctx.send(file=discord.File(buf, filename=f"{game_id}_stats.json"))
 
-    @bot.command(name="importstats")
+    @bot.hybrid_command(name="importstats", description="URLからトーナメントデータを取り込みます")
     @admin_check()
     async def importstats(ctx, game_id: str, json_url: str):
         """URLからJSONをインポート。"""
         try:
+            await ctx.defer()
             async with aiohttp.ClientSession() as session:
                 async with session.get(json_url) as resp:
                     resp.raise_for_status()
@@ -880,12 +876,28 @@ def register_commands(bot):
         except Exception as e:
             await ctx.send(f"❌ インポートに失敗しました: {e}")
 
-    @bot.command(name="makegame")
+    @bot.hybrid_command(name="makegame", description="ゲームとチームを作成します")
     @admin_check()
-    async def makegame(ctx, game_id: str, *teams: str):
+    async def makegame(
+        ctx,
+        game_id: str,
+        team1: Optional[str] = None,
+        team2: Optional[str] = None,
+        team3: Optional[str] = None,
+        team4: Optional[str] = None,
+        team5: Optional[str] = None,
+        team6: Optional[str] = None,
+        team7: Optional[str] = None,
+        team8: Optional[str] = None,
+    ):
         """ゲームを作成。任意でチーム名も作成。"""
         data = load_data()
         tournament = get_tournament(data, game_id)
+        teams = [
+            team_name
+            for team_name in (team1, team2, team3, team4, team5, team6, team7, team8)
+            if team_name
+        ]
 
         for team_name in teams:
             _, existing = get_team_by_name(tournament, team_name)
@@ -897,7 +909,7 @@ def register_commands(bot):
         save_data(data)
         await ctx.send(f"✅ ゲーム '{game_id}' を作成しました。チーム: {', '.join(teams) if teams else 'なし'}")
 
-    @bot.command(name="gamestats")
+    @bot.hybrid_command(name="gamestats", description="ゲームの概要を表示します")
     async def gamestats(ctx, game_id: str):
         """ゲーム概要を表示。"""
         data = load_data()
@@ -911,7 +923,7 @@ def register_commands(bot):
         embed.add_field(name="チーム数", value=total_teams, inline=True)
         await ctx.send(embed=embed)
 
-    @bot.command(name="deletegame")
+    @bot.hybrid_command(name="deletegame", description="ゲームと全データを削除します")
     @admin_check()
     async def deletegame(ctx, game_id: str):
         """ゲームデータを削除。"""
@@ -925,13 +937,13 @@ def register_commands(bot):
         save_data(data)
         await ctx.send(f"✅ ゲーム '{game_id}' とそのスタッツを削除しました。")
 
-    @bot.command(name="image")
+    @bot.hybrid_command(name="image", description="ランキング画像を生成します（未実装）")
     @admin_check()
     async def image(ctx, game_id: str, stat_type: str):
         """画像生成 placeholder。"""
         await ctx.send(f"画像生成機能は未実装です (ゲーム: {game_id}, タイプ: {stat_type})。")
 
-    @bot.command(name="backimage")
+    @bot.hybrid_command(name="backimage", description="背景画像を設定します（未実装）")
     @admin_check()
     async def backimage(ctx, game_id: str):
         """背景画像設定 placeholder。"""
@@ -944,7 +956,7 @@ def register_commands(bot):
         elif isinstance(error, commands.MissingRequiredArgument):
             await ctx.send("❌ 引数が不足しています。コマンドの使い方を確認してください。")
         elif isinstance(error, commands.CommandNotFound):
-            await ctx.send("❌ コマンドが見つかりません。`!commands` で利用可能なコマンドを確認してください。")
+            await ctx.send("❌ コマンドが見つかりません。`/commands` で利用可能なコマンドを確認してください。")
         else:
             loc = "不明な場所"
             try:

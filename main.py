@@ -24,10 +24,16 @@ from config.settings import TOKEN
 from commands.bot_commands import register_commands
 
 
+class TournamentBot(commands.Bot):
+    async def setup_hook(self):
+        """ログイン時にスラッシュコマンドをDiscordへ同期する。"""
+        synced = await self.tree.sync()
+        print(f"Synced {len(synced)} slash commands")
+
+
 # ボット設定
 intents = discord.Intents.default()
-intents.message_content = True
-bot = commands.Bot(command_prefix="!", intents=intents)
+bot = TournamentBot(command_prefix=commands.when_mentioned, intents=intents)
 
 
 # =========================
