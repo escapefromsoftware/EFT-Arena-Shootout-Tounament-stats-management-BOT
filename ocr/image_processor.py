@@ -4,6 +4,7 @@
 
 import sys
 from pathlib import Path
+import discord
 
 # プロジェクトルートをパスに追加
 _project_root = Path(__file__).parent.parent
@@ -167,3 +168,15 @@ async def parse_scoreboard_image(rslt_img):
         })
 
     return players
+
+async def confirm_ocr_result(tournamnet, parsed_players):
+    """OCRの結果を保存するか否かを決める。"""
+    ctx = None
+    await ctx.send("OCR結果を保存しますか？")
+    @discord.ui.button(label="Save", style=discord.ButtonStyle.success)
+    async def ok(self, button: discord.ui.Button, interaction: discord.Interaction):
+        await interaction.response.send_message(f"{interaction.user.mention} 結果を保存します！")
+
+    @discord.ui.button(label="Not save", style=discord.ButtonStyle.gray)
+    async def ng(self, button: discord.ui.Button, interaction: discord.Interaction):
+        await interaction.response.send_message(f"{interaction.user.mention} 保存されませんでした")

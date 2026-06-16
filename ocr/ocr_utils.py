@@ -354,7 +354,7 @@ def _ocr_digit_vote_sync(image, box, config, field_type="digit", scale=6, defaul
 
 
 async def read_digit_cell(image, base_box, config, field_type="digit", scale=6, default=None, min_votes=2, max_value=30):
-    """数字セルを読み取る（多数決）。"""
+    """数字セルを読み取る。（多数決）"""
     value, raw = await asyncio.to_thread(
         _ocr_digit_vote_sync,
         image,

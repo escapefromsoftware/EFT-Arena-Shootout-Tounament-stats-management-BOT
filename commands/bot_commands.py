@@ -140,6 +140,90 @@ async def send_long(ctx, message, limit=1900):
         await ctx.send(chunk)
 
 
+def _format_ocr_result_lines(parsed_players, tournament=None, game_id=None, title="**OCR読み取り結果:**"):
+    """OCR結果表示用のテキスト行を作る。"""
+    if game_id:
+        title += f" game_id={game_id}"
+
+    lines = [title]
+    team_seen = {}
+    for p in parsed_players:
+        t = p["team_index"] + 1
+        team_seen[t] = team_seen.get(t, 0) + 1
+        raw_name = p.get("raw", {}).get("ocr_name", p["ingame_name"])
+        name_part = p["ingame_name"]
+        if raw_name and raw_name != p["ingame_name"]:
+            name_part = f"{raw_name} -> {p['ingame_name']}"
+
+        discord_part = ""
+        if tournament:
+            _, player = get_player_by_ingame_name(tournament, p["ingame_name"])
+            if player:
+                discord_part = f" (<@{player['discord_id']}>)" if player["discord_id"] else " (Discord未設定)"
+            else:
+                discord_part = " (Discord未設定)"
+
+        lines.append(
+            f"{t}-{team_seen[t]}: "
+            f"{name_part}{discord_part} | MVP={p['rounds_mvp']} | "
+            f"{p['kills']}/{p['deaths']}/{p['assists']} | "
+            f"AVG={format_time(p['avg_win_time'])} | SCORE={p['score']}"
+        )
+
+    return lines
+
+
+async def confirm_ocr_result(ctx, parsed_players, tournament, game_id):
+    """OCR結果を表示し、保存するかどうかを返す。"""
+    lines = _format_ocr_result_lines(
+        parsed_players,
+        tournament=tournament,
+        game_id=game_id,
+        title="**OCR読み取り結果（保存前確認）:**",
+    )
+    await send_long(ctx, "\n".join(lines))
+
+    view = discord.ui.View(timeout=60)
+    result = {"confirmed": None}
+
+    save_button = discord.ui.Button(label="保存", style=discord.ButtonStyle.success)
+    cancel_button = discord.ui.Button(label="保存しない", style=discord.ButtonStyle.secondary)
+
+    async def save_callback(interaction):
+        if interaction.user.id != ctx.author.id:
+            await interaction.response.send_message(
+                "この確認ボタンはコマンド実行者だけが操作できます。",
+                ephemeral=True,
+            )
+            return
+
+        result["confirmed"] = True
+        await interaction.response.edit_message(content="保存します。", view=None)
+        view.stop()
+
+    async def cancel_callback(interaction):
+        if interaction.user.id != ctx.author.id:
+            await interaction.response.send_message(
+                "この確認ボタンはコマンド実行者だけが操作できます。",
+                ephemeral=True,
+            )
+            return
+
+        result["confirmed"] = False
+        await interaction.response.edit_message(content="保存しませんでした。", view=None)
+        view.stop()
+
+    save_button.callback = save_callback
+    cancel_button.callback = cancel_callback
+    view.add_item(save_button)
+    view.add_item(cancel_button)
+
+    await ctx.send("OCR結果を保存しますか？", view=view)
+    await view.wait()
+
+    return result["confirmed"] is True
+
+
 def register_commands(bot):
     """すべてのコマンドを登録する。"""
 
@@ -272,9 +356,13 @@ def register_commands(bot):
 
             parsed_players = apply_name_corrections(parsed_players, tournament)
 
+            should_save = await confirm_ocr_result(ctx, parsed_players, tournament, game_id)
+            if not should_save:
+                await ctx.send("OCR結果の保存をキャンセルしました。")
+                return
+
             updated_count, result_msg = _apply_parsed_players_to_data(tournament, parsed_players)
             save_recent_match(tournament, parsed_players)
-
             save_data(data)
 
             await ctx.send(f"✅ **{updated_count}人のプレイヤーのスタッツを更新しました！** (ゲーム: {game_id})")
