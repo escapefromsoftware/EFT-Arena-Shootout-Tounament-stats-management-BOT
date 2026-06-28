@@ -1,4 +1,4 @@
-# プロジェクト名　EFT:Arena Shootout Tounament stats management BOT
+# プロジェクト名　EFT:Arena Shootout Tournament stats management BOT
 
 ## 概要
 このプロジェクトはEFT:ArenaのKDA,score,Average win timeをリザルト画面から自動的に集計し、
