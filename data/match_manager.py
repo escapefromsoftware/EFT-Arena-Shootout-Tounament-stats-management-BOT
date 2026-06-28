@@ -160,6 +160,7 @@ def get_team_recent_results(tournament, team_id, limit=RECENT_MATCH_LIMIT):
                     "kills": sum(player.get("kills", 0) for player in players),
                     "deaths": sum(player.get("deaths", 0) for player in players),
                     "assists": sum(player.get("assists", 0) for player in players),
+                    "rounds_MVP": sum(player.get("rounds_MVP", 0) for player in players),
                 }
             )
             break

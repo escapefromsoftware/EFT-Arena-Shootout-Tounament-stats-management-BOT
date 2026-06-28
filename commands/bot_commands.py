@@ -18,6 +18,7 @@ from typing import Optional
 
 import aiohttp
 import discord
+from discord import app_commands
 from discord.ext import commands
 from PIL import Image as PILImage, ImageDraw
 
@@ -32,6 +33,13 @@ from data.match_manager import (
     get_team_recent_results,
     save_recent_match,
 )
+from image_renderer import (
+    render_match_image,
+    render_player_image,
+    render_ranking_image,
+    render_team_image,
+    save_background_image,
+)
 from ocr.image_processor import parse_scoreboard_image
 from ocr.name_correction import apply_name_corrections
 from ocr.ocr_utils import scale_box, format_time
@@ -40,7 +48,7 @@ from ocr.ocr_utils import scale_box, format_time
 def admin_check():
     """コマンド実行者が管理者かどうかをチェックするデコレーター。"""
     async def predicate(ctx):
-        if ctx.author.id == BOT_ADMIN_ID:
+        if ctx.author.id in BOT_ADMIN_ID:
             return True
         permissions = getattr(ctx.author, "guild_permissions", None)
         if permissions and permissions.administrator:
@@ -58,7 +66,7 @@ async def _download_first_attachment_image(ctx):
 def _apply_parsed_players_to_data(tournament, parsed_players):
     """OCR解析結果をトーナメントデータに適用する。"""
     updated_count = 0
-    result_lines = ["**更新内容:**"]
+    result_rows = []
 
     for parsed in parsed_players:
         ingame_name = parsed["ingame_name"]
@@ -89,11 +97,14 @@ def _apply_parsed_players_to_data(tournament, parsed_players):
             p["AVG_WIN_time"] = new_avg
             p["matches_played"] = old_count + 1
 
-            result_lines.append(
-                f"✅ {ingame_name}{name_note}: MVP={rounds_mvp}, "
-                f"{kills}/{deaths}/{assists}, "
-                f"SCORE={score}, AVG_WIN_TIME={format_time(avg_win_time)}"
-            )
+            result_rows.append({
+                "status": "更新",
+                "name": f"{ingame_name}{name_note}",
+                "mvp": rounds_mvp,
+                "kda": f"{kills}/{deaths}/{assists}",
+                "score": score,
+                "avg": format_time(avg_win_time),
+            })
             updated_count += 1
         else:
             new_player_id = str(uuid.uuid4())
@@ -110,12 +121,38 @@ def _apply_parsed_players_to_data(tournament, parsed_players):
                 "matches_played": 1,
                 "team_id": None,
             }
-            result_lines.append(
-                f"✅ {ingame_name}{name_note}: 新規プレイヤーとして自動保存しました（Discord未設定） "
-                f"MVP={rounds_mvp}, {kills}/{deaths}/{assists}, "
-                f"SCORE={score}, AVG_WIN_TIME={format_time(avg_win_time)}"
-            )
+            result_rows.append({
+                "status": "新規",
+                "name": f"{ingame_name}{name_note}",
+                "mvp": rounds_mvp,
+                "kda": f"{kills}/{deaths}/{assists}",
+                "score": score,
+                "avg": format_time(avg_win_time),
+            })
             updated_count += 1
+
+    name_width = max([len("Player"), *(len(row["name"]) for row in result_rows)])
+    kda_width = max([len("K/D/A"), *(len(row["kda"]) for row in result_rows)])
+    score_width = max([len("Score"), *(len(str(row["score"])) for row in result_rows)])
+
+    result_lines = [
+        "**更新内容:**",
+        "```text",
+        f"{'状態':<4} {'Player':<{name_width}} {'MVP':>3} {'K/D/A':>{kda_width}} {'Score':>{score_width}} AVG_WIN_TIME",
+        f"{'-' * 4} {'-' * name_width} {'-' * 3} {'-' * kda_width} {'-' * score_width} ------------",
+    ]
+    for row in result_rows:
+        result_lines.append(
+            f"{row['status']:<4} "
+            f"{row['name']:<{name_width}} "
+            f"{row['mvp']:>3} "
+            f"{row['kda']:>{kda_width}} "
+            f"{row['score']:>{score_width}} "
+            f"{row['avg']}"
+        )
+    result_lines.append("```")
+    if any(row["status"] == "新規" for row in result_rows):
+        result_lines.append("※ 新規 = Discord未設定のプレイヤーとして自動保存")
 
     return updated_count, "\n".join(result_lines)
 
@@ -259,6 +296,10 @@ def register_commands(bot):
             "/makegame <game_id> [team1...team8] - ゲーム作成\n"
             "/gamestats <game_id> - ゲーム概要表示\n"
             "/deletegame <game_id> - ゲーム削除\n"
+            "/image <game_id> <image_type> [target] [@discord_user] - スタッツ画像を生成\n"
+            "  image_type: ranking=ランキング / match=直近試合 / player=プレイヤー / team=チーム\n"
+            "  target: rankingならKD等、matchなら1〜5、teamならチーム名。playerでは不要\n"
+            "/backimage <game_id> <image> - /imageで使う背景画像を設定\n"
             "```"
         )
 
@@ -1025,17 +1066,123 @@ def register_commands(bot):
         save_data(data)
         await ctx.send(f"✅ ゲーム '{game_id}' とそのスタッツを削除しました。")
 
-    @bot.hybrid_command(name="image", description="ランキング画像を生成します（未実装）")
-    @admin_check()
-    async def image(ctx, game_id: str, stat_type: str):
-        """画像生成 placeholder。"""
-        await ctx.send(f"画像生成機能は未実装です (ゲーム: {game_id}, タイプ: {stat_type})。")
+    @bot.hybrid_command(name="image", description="スタッツ画像を生成します")
+    @app_commands.describe(
+        game_id="大会・トーナメントIDです。例: KCARZCUP_GF",
+        image_type="作成する画像の種類です。ranking / match / player / team から選びます。",
+        target="ranking: KD等 / match: 1〜5 / team: チーム名 / player: 入力不要",
+        discord_user="player画像を作る時だけ、対象プレイヤーをメンションで指定します。",
+    )
+    @app_commands.choices(
+        image_type=[
+            app_commands.Choice(name="ランキング画像", value="ranking"),
+            app_commands.Choice(name="直近試合画像", value="match"),
+            app_commands.Choice(name="プレイヤー成績画像", value="player"),
+            app_commands.Choice(name="チーム成績画像", value="team"),
+        ]
+    )
+    async def image(
+        ctx,
+        game_id: str,
+        image_type: str = "ranking",
+        target: Optional[str] = None,
+        discord_user: Optional[discord.Member] = None,
+    ):
+        """ランキング、試合、プレイヤー、チームのスタッツ画像を生成する。"""
+        await ctx.defer()
+        data = load_data()
+        tournament = get_tournament(data, game_id)
+        mode = (image_type or "ranking").lower()
 
-    @bot.hybrid_command(name="backimage", description="背景画像を設定します（未実装）")
+        try:
+            if mode == "ranking":
+                stat_type = (target or "KD").upper()
+                valid_stats = {"KD", "KDA", "KILLS", "SCORE", "MVP", "AVG_WIN_TIME"}
+                if stat_type not in valid_stats:
+                    await ctx.send(
+                        "❌ ranking の target は `KD` / `KDA` / `KILLS` / `SCORE` / `MVP` / `AVG_WIN_TIME` のどれかを指定してください。\n"
+                        "例: `/image KCARZCUP_GF ranking KD`"
+                    )
+                    return
+
+                buffer = render_ranking_image(tournament, game_id, stat_type)
+                filename = f"{game_id}_ranking_{stat_type}.png"
+
+            elif mode == "match":
+                recent_matches = tournament.get("recent_matches", [])
+                if not recent_matches:
+                    await ctx.send("❌ 直近試合データがありません。先に `/updateimage` で試合を保存してください。")
+                    return
+
+                try:
+                    match_number = int(target or 1)
+                except ValueError:
+                    await ctx.send("❌ match の target には 1〜5 の数字を指定してください。例: `/image KCARZCUP_GF match 1`")
+                    return
+
+                max_match = len(recent_matches[:5])
+                if match_number < 1 or match_number > max_match:
+                    await ctx.send(f"❌ 指定できる試合番号は 1〜{max_match} です。")
+                    return
+
+                buffer = render_match_image(tournament, game_id, match_number)
+                filename = f"{game_id}_match_{match_number}.png"
+
+            elif mode == "player":
+                if discord_user is None:
+                    await ctx.send("❌ player画像は @discord_username を指定してください。例: `/image KCARZCUP_GF player @user`")
+                    return
+
+                player_id, player = get_player_by_discord_id(tournament, discord_id=discord_user.id)
+                if not player:
+                    await ctx.send(f"❌ プレイヤー <@{discord_user.id}> が見つかりません (ゲーム: {game_id})。")
+                    return
+
+                recent_results = get_player_recent_results(tournament, player_id)
+                buffer = render_player_image(tournament, game_id, player_id, player, recent_results)
+                filename = f"{game_id}_{player.get('ingame_name') or discord_user.id}.png"
+
+            elif mode == "team":
+                if not target:
+                    await ctx.send("❌ team画像は target にチーム名を指定してください。例: `/image KCARZCUP_GF team TeamA`")
+                    return
+
+                team_id, team = get_team_by_name(tournament, target)
+                if not team:
+                    await ctx.send(f"❌ チーム '{target}' が見つかりません (ゲーム: {game_id})。")
+                    return
+
+                recent_results = get_team_recent_results(tournament, team_id)
+                buffer = render_team_image(tournament, game_id, team_id, team, recent_results)
+                filename = f"{game_id}_{team.get('team_name', 'team')}.png"
+
+            else:
+                await ctx.send("❌ image_type は ranking / match / player / team のどれかを指定してください。")
+                return
+
+            await ctx.send(file=discord.File(buffer, filename=filename))
+
+        except Exception as e:
+            loc = "不明な場所"
+            try:
+                tb = traceback.extract_tb(e.__traceback__)
+                if tb:
+                    last = tb[-1]
+                    loc = f"{last.filename}:{last.lineno}"
+            except Exception:
+                pass
+            await ctx.send(f"❌ 画像生成中にエラーが発生しました: {e} (場所: {loc})")
+
+    @bot.hybrid_command(name="backimage", description="/imageで使う背景画像を設定します")
     @admin_check()
-    async def backimage(ctx, game_id: str):
-        """背景画像設定 placeholder。"""
-        await ctx.send(f"背景画像設定機能は未実装です (ゲーム: {game_id})。")
+    async def backimage(ctx, game_id: str, image: discord.Attachment):
+        """大会ごとの背景画像を保存する。1大会につき1枚だけ保持。"""
+        try:
+            image_bytes = await image.read()
+            save_background_image(game_id, image_bytes)
+            await ctx.send(f"✅ `{game_id}` の背景画像を保存しました。既存の背景がある場合は上書きされています。")
+        except Exception as e:
+            await ctx.send(f"❌ 背景画像の保存に失敗しました: {e}")
 
     @bot.event
     async def on_command_error(ctx, error):

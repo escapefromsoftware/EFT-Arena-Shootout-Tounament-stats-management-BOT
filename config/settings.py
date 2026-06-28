@@ -16,7 +16,7 @@ pytesseract.pytesseract.tesseract_cmd = os.getenv(
 load_dotenv()
 TOKEN = os.getenv("TOKEN")
 DATA_FILE = "tournament_data.json"
-BOT_ADMIN_ID = 721546801743790110
+BOT_ADMIN_ID = [721546801743790110,1241016834791182377,907548165459296316]
 
 # EFT:Arena リザルト画像OCR設定
 # 元画像 1920x1080 を基準にした固定座標
