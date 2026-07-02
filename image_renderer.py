@@ -311,6 +311,64 @@ def _draw_recent_results(draw, title, recent_results, x=980, y=300):
     _draw_table(draw, x, y, columns, rows, row_h=58)
 
 
+def _standing_matches(standing, participant_ids, participant_names):
+    standing_id = str(standing.get("participant_id") or "")
+    standing_name = str(standing.get("participant_name") or "").lower()
+    ids = {str(item) for item in participant_ids if item}
+    names = {str(item).lower() for item in participant_names if item}
+    return (standing_id and standing_id in ids) or (standing_name and standing_name in names)
+
+
+def _find_standing_summary(tournament, participant_ids, participant_names):
+    matches = []
+    for stage in tournament.get("stages", []):
+        standings = stage.get("standings", [])
+        for index, standing in enumerate(standings, 1):
+            if not _standing_matches(standing, participant_ids, participant_names):
+                continue
+            rank = standing.get("rank") or index
+            matches.append((stage, standing, rank))
+            break
+
+    if not matches:
+        return {"rank": "TBD", "points": None, "format": None}
+
+    matches.sort(key=lambda item: 0 if item[0].get("format") == "points_race" else 1)
+    stage, standing, rank = matches[0]
+    if stage.get("format") == "points_race":
+        return {
+            "rank": f"#{rank}",
+            "points": f"{standing.get('points', 0)} pt",
+            "format": "points_race",
+        }
+    return {"rank": f"#{rank}", "points": None, "format": stage.get("format")}
+
+
+def _standing_rows_for_player(tournament, player_id, player, team_id, team_name):
+    names = [player.get("ingame_name"), str(player.get("discord_id") or "")]
+    ids = [player_id]
+    if team_id:
+        ids.append(team_id)
+        names.append(team_name)
+    summary = _find_standing_summary(tournament, ids, names)
+    rows = [("provisional_rank", summary["rank"])]
+    if summary.get("format") == "points_race":
+        rows.append(("points", summary.get("points") or "0 pt"))
+    return rows
+
+
+def _standing_rows_for_team(tournament, team_id, team):
+    summary = _find_standing_summary(
+        tournament,
+        [team_id],
+        [team.get("team_name")],
+    )
+    rows = [("provisional_rank", summary["rank"])]
+    if summary.get("format") == "points_race":
+        rows.append(("points", summary.get("points") or "0 pt"))
+    return rows
+
+
 def render_player_image(tournament, game_id, player_id, player, recent_results):
     player = ensure_player_defaults(player)
     image, draw = _base_canvas(game_id, "Player Stats")
@@ -334,7 +392,8 @@ def render_player_image(tournament, game_id, player_id, player, recent_results):
         ("matches_played", player.get("matches_played", 0)),
         ("teammember", ", ".join(members) if members else team_name),
     ]
-    _draw_table(draw, 300, 320, [("Item", 260, "left"), ("Value", 360, "left")], rows, row_h=52)
+    rows.extend(_standing_rows_for_player(tournament, player_id, player, team_id, team_name))
+    _draw_table(draw, 300, 320, [("Item", 260, "left"), ("Value", 360, "left")], rows, row_h=48)
     _draw_recent_results(draw, "Recent 5 Matches", recent_results)
     return _finalize(image)
 
@@ -369,6 +428,65 @@ def render_team_image(tournament, game_id, team_id, team, recent_results):
         ("matches_played", matches_played),
         ("teammember", ", ".join(_player_display(player) for player in members) or "なし"),
     ]
-    _draw_table(draw, 300, 320, [("Item", 260, "left"), ("Value", 360, "left")], rows, row_h=52)
+    rows.extend(_standing_rows_for_team(tournament, team_id, team))
+    _draw_table(draw, 300, 320, [("Item", 260, "left"), ("Value", 360, "left")], rows, row_h=48)
     _draw_recent_results(draw, "Recent 5 Matches", recent_results)
     return _finalize(image)
+
+
+def _standing_value(stage_format, standing):
+    if stage_format == "points_race":
+        return f"{standing.get('points', 0)} pt"
+    if stage_format in ("group_stage", "swiss", "swiss_draw"):
+        return f"{standing.get('wins', 0)}W-{standing.get('losses', 0)}L"
+    return standing.get("status") or "TBD"
+
+
+def _standing_rows(stage):
+    stage_format = stage.get("format", "")
+    rows = []
+    for index, standing in enumerate(stage.get("standings", [])[:80], 1):
+        rank = standing.get("rank") or index
+        rows.append([
+            rank,
+            standing.get("participant_name", "TBD"),
+            _standing_value(stage_format, standing),
+        ])
+    return rows
+
+
+def _draw_standing_side(draw, x, y, rows, row_h=60):
+    columns = [
+        ("Rank", 90, "center"),
+        ("Team", 430, "left"),
+        ("Result", 170, "center"),
+    ]
+    _draw_table(draw, x, y, columns, rows, row_h=row_h)
+
+
+def render_standings_images(tournament, game_id, stage):
+    """大会順位を最大80件、1画像20件で生成する。"""
+    rows = _standing_rows(stage)
+    if not rows:
+        rows = [[rank, "TBA", "TBD"] for rank in range(1, 21)]
+
+    rows = rows[:80]
+    images = []
+    page_count = max(1, (len(rows) + 19) // 20)
+    title = f"{stage.get('name', 'Stage')} Standings"
+
+    for page in range(page_count):
+        page_rows = rows[page * 20:(page + 1) * 20]
+        start_rank = page * 20 + 1
+        while len(page_rows) < 20:
+            next_rank = start_rank + len(page_rows)
+            page_rows.append([next_rank, "TBA", "TBD"])
+
+        image, draw = _base_canvas(game_id, f"{title} #{page + 1}")
+        left_rows = page_rows[:10]
+        right_rows = page_rows[10:20]
+        _draw_standing_side(draw, 260, 230, left_rows)
+        _draw_standing_side(draw, 970, 230, right_rows)
+        images.append(_finalize(image))
+
+    return images

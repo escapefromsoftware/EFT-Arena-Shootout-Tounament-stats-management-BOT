@@ -11,6 +11,7 @@ if str(_project_root) not in sys.path:
     sys.path.insert(0, str(_project_root))
 
 import json
+import random
 import traceback
 import uuid
 from io import BytesIO
@@ -37,6 +38,7 @@ from image_renderer import (
     render_match_image,
     render_player_image,
     render_ranking_image,
+    render_standings_images,
     render_team_image,
     save_background_image,
 )
@@ -177,6 +179,243 @@ async def send_long(ctx, message, limit=1900):
         await ctx.send(chunk)
 
 
+VALID_PARTICIPANT_TYPES = {"team", "player"}
+VALID_STAGE_FORMATS = {
+    "points_race",
+    "single_elimination",
+    "double_elimination",
+    "swiss",
+    "group_stage",
+}
+BRACKET_STAGE_FORMATS = {"single_elimination", "double_elimination"}
+
+
+def _normalize_choice(value):
+    return str(value or "").strip().lower()
+
+
+def _parse_points_rule(points_text):
+    """'1:10,2:7' のようなポイント設定をリストへ変換する。"""
+    items = []
+    for chunk in str(points_text or "").split(","):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        if ":" not in chunk:
+            raise ValueError("pointsは `1:10,2:7` の形式で入力してください。")
+        rank_text, points_text = chunk.split(":", 1)
+        rank = int(rank_text.strip())
+        points = int(points_text.strip())
+        if rank <= 0:
+            raise ValueError("順位は1以上で入力してください。")
+        items.append({"rank": rank, "points": points})
+
+    if not items:
+        raise ValueError("ポイント設定が空です。")
+    return sorted(items, key=lambda item: item["rank"])
+
+
+def _find_stage(tournament, stage_name):
+    target = str(stage_name or "").strip().lower()
+    for stage in tournament.get("stages", []):
+        if stage.get("name", "").lower() == target:
+            return stage
+    return None
+
+
+def _get_stage_display(stage):
+    line = (
+        f"{stage.get('name')} | {stage.get('format')} | "
+        f"進出数={stage.get('advance_count', 0)}"
+    )
+    if int(stage.get("group_count", 0) or 0) > 0:
+        line += f" | グループ数={stage.get('group_count')}"
+    return line
+
+
+def _get_participants(tournament):
+    participant_type = tournament.get("settings", {}).get("participant_type", "team")
+    if participant_type == "player":
+        participants = []
+        for player_id, player in tournament.get("players", {}).items():
+            name = player.get("ingame_name") or (
+                f"<@{player['discord_id']}>" if player.get("discord_id") else player_id
+            )
+            participants.append({"id": player_id, "name": name})
+        return participants
+
+    return [
+        {"id": team_id, "name": team.get("team_name", team_id)}
+        for team_id, team in tournament.get("teams", {}).items()
+    ]
+
+
+def _find_participant(tournament, participant_name):
+    target = str(participant_name or "").strip().lower()
+    for participant in _get_participants(tournament):
+        if participant["name"].lower() == target:
+            return participant
+    return None
+
+
+def _format_bracket(bracket):
+    if not bracket:
+        return "未設定"
+    return "\n".join(
+        f"{seed['seed']}. {seed['participant_name']}"
+        for seed in bracket
+    )
+
+
+def _stage_result_text(stage, standing):
+    stage_format = stage.get("format", "")
+    if stage_format == "points_race":
+        return f"{standing.get('points', 0)}pt"
+    if stage_format in ("group_stage", "swiss", "swiss_draw"):
+        return f"{standing.get('wins', 0)}W-{standing.get('losses', 0)}L"
+    return standing.get("status") or "TBD"
+
+
+def _sort_standings(stage):
+    standings = stage.setdefault("standings", [])
+    stage_format = stage.get("format", "")
+    if stage_format == "points_race":
+        standings.sort(key=lambda item: (-int(item.get("points", 0) or 0), item.get("participant_name", "")))
+    elif stage_format in ("group_stage", "swiss", "swiss_draw"):
+        standings.sort(
+            key=lambda item: (
+                -int(item.get("wins", 0) or 0),
+                int(item.get("losses", 0) or 0),
+                item.get("participant_name", ""),
+            )
+        )
+    else:
+        standings.sort(
+            key=lambda item: (
+                int(item.get("rank", 0) or 9999),
+                item.get("participant_name", ""),
+            )
+        )
+
+    for index, standing in enumerate(standings, 1):
+        if stage_format in ("points_race", "group_stage", "swiss", "swiss_draw"):
+            standing["rank"] = index
+        elif not int(standing.get("rank", 0) or 0):
+            standing["rank"] = index
+    return standings
+
+
+def _upsert_standing(stage, standing):
+    standings = stage.setdefault("standings", [])
+    target = standing.get("participant_name", "").lower()
+    for index, current in enumerate(standings):
+        if current.get("participant_name", "").lower() == target:
+            standings[index] = standing
+            return
+    standings.append(standing)
+
+
+def _build_standings_text(stage):
+    standings = _sort_standings(stage)[:80]
+    if not standings:
+        standings = [
+            {"rank": rank, "participant_name": "TBA", "status": "TBD"}
+            for rank in range(1, 21)
+        ]
+
+    lines = [f"**{stage.get('name')} 順位**", "```text"]
+    for standing in standings:
+        rank = standing.get("rank") or "-"
+        name = standing.get("participant_name", "TBA")
+        result = _stage_result_text(stage, standing)
+        lines.append(f"{rank:>2}. {name:<32} {result}")
+    if len(stage.get("standings", [])) > 80:
+        lines.append("※ 81位以降は省略")
+    lines.append("```")
+    return "\n".join(lines)
+
+
+def _points_for_rank(stage, rank):
+    for item in stage.get("scoring_rule", []):
+        if int(item.get("rank", 0) or 0) == int(rank):
+            return int(item.get("points", 0) or 0)
+    return 0
+
+
+def _standing_participants_from_match_team(tournament, match_team):
+    participant_type = tournament.get("settings", {}).get("participant_type", "team")
+    if participant_type == "player":
+        participants = []
+        for player in match_team.get("players", []):
+            player_id = player.get("player_id")
+            name = player.get("ingame_name") or player.get("discord_id") or "TBA"
+            participants.append({"id": player_id, "name": str(name)})
+        return participants
+
+    team_id = match_team.get("team_id")
+    team_name = match_team.get("team_name")
+    if team_id and team_id in tournament.get("teams", {}):
+        team_name = tournament["teams"][team_id].get("team_name", team_name)
+
+    if not team_name:
+        names = [
+            player.get("ingame_name", "TBA")
+            for player in match_team.get("players", [])
+        ]
+        team_name = " / ".join(names) or f"Team {int(match_team.get('team_index', 0)) + 1}"
+
+    return [{"id": team_id, "name": team_name}]
+
+
+def _find_standing_by_name(stage, participant_name):
+    target = str(participant_name or "").lower()
+    for standing in stage.setdefault("standings", []):
+        if standing.get("participant_name", "").lower() == target:
+            return standing
+    return None
+
+
+def _apply_match_to_stage_standings(tournament, stage, match):
+    stage_format = stage.get("format", "")
+    updated = 0
+
+    for match_team in match.get("teams", []):
+        match_rank = int(match_team.get("rank", 0) or 0)
+        for participant in _standing_participants_from_match_team(tournament, match_team):
+            standing = _find_standing_by_name(stage, participant["name"])
+            if not standing:
+                standing = {
+                    "participant_id": participant.get("id"),
+                    "participant_name": participant.get("name", "TBA"),
+                    "rank": 0,
+                    "points": 0,
+                    "wins": 0,
+                    "losses": 0,
+                    "status": "",
+                }
+                stage.setdefault("standings", []).append(standing)
+
+            standing["participant_id"] = standing.get("participant_id") or participant.get("id")
+
+            if stage_format == "points_race":
+                standing["points"] = int(standing.get("points", 0) or 0) + _points_for_rank(stage, match_rank)
+            elif stage_format in ("group_stage", "swiss", "swiss_draw"):
+                if match_rank == 1:
+                    standing["wins"] = int(standing.get("wins", 0) or 0) + 1
+                else:
+                    standing["losses"] = int(standing.get("losses", 0) or 0) + 1
+            elif stage_format in BRACKET_STAGE_FORMATS:
+                standing["rank"] = match_rank
+                standing["status"] = standing.get("status") or "TBD"
+            else:
+                standing["rank"] = match_rank
+
+            updated += 1
+
+    _sort_standings(stage)
+    return updated
+
+
 def _format_ocr_result_lines(parsed_players, tournament=None, game_id=None, title="**OCR読み取り結果:**"):
     """OCR結果表示用のテキスト行を作る。"""
     if game_id:
@@ -267,41 +506,67 @@ def register_commands(bot):
     @bot.hybrid_command(name="commands", description="コマンド一覧を表示します")
     async def help_command(ctx):
         """コマンド一覧を表示。"""
-        await ctx.send(
-            "📊 **トーナメントスタッツ管理Botのコマンド一覧** 📊\n"
-            "```markdown\n"
-            "/commands - コマンド一覧を表示\n"
-            "/updateimage <game_id> <image> - 画像からOCRでスタッツを更新\n"
-            "/checkimage <image> [game_id] - OCR結果だけ表示。game_id指定時だけ登録済み名前に補正\n"
-            "/debugocr <image> - 座標確認用の画像を返す\n"
-            "/updatestats <game_id> <discord_user> <各スタッツ> - 累計スタッツを手動更新\n"
-            "/setplayer <game_id> <@discord_user> <ingame_name> - インゲーム名を設定\n"
-            "/unassign <game_id> <@discord_user> - インゲーム名を解除\n"
-            "/remakeplayer <game_id> <old_ingame_name> <new_ingame_name> - ingame_nameを修正\n"
-            "/playerstats <game_id> <@discord_user> - プレイヤーのスタッツを表示\n"
-            "/resetstats <game_id> <@discord_user> - プレイヤーのスタッツをリセット\n"
-            "/resetkda <game_id> - 全プレイヤーのKDAなどをリセット\n"
-            "/resetdata <game_id> - トーナメントデータをリセット\n"
-            "/rankings <game_id> <KD|KDA|KILLS|SCORE|MVP|AVG_WIN_TIME> - ランキング表示\n"
-            "/addplayer <game_id> <@discord_user> <ingame_name> - プレイヤー追加\n"
-            "/removeplayer <game_id> <@discord_user> - プレイヤー削除\n"
-            "/showplayers <game_id> - 参加プレイヤー一覧\n"
-            "/maketeam <game_id> <team_name> [user1...user8] - チーム作成\n"
-            "/teamstats <game_id> <team_name> - チームスタッツ表示\n"
-            "/addteam <game_id> <team_name> <@discord_user> - チームに追加\n"
-            "/removeteam <game_id> <team_name> <@discord_user> - チームから削除\n"
-            "/deleteteam <game_id> <team_name> - チーム削除\n"
-            "/exportstats <game_id> - JSON出力\n"
-            "/importstats <game_id> <json_url> - JSONインポート\n"
-            "/makegame <game_id> [team1...team8] - ゲーム作成\n"
-            "/gamestats <game_id> - ゲーム概要表示\n"
-            "/deletegame <game_id> - ゲーム削除\n"
-            "/image <game_id> <image_type> [target] [@discord_user] - スタッツ画像を生成\n"
-            "  image_type: ranking=ランキング / match=直近試合 / player=プレイヤー / team=チーム\n"
-            "  target: rankingならKD等、matchなら1〜5、teamならチーム名。playerでは不要\n"
-            "/backimage <game_id> <image> - /imageで使う背景画像を設定\n"
-            "```"
-        )
+        pages = [
+            (
+                "📊 **トーナメントスタッツ管理Botのコマンド一覧 1/4: OCR・個人成績** 📊\n"
+                "```markdown\n"
+                "/commands - コマンド一覧を表示\n"
+                "/updateimage <game_id> <image> [stage_name] - 画像からOCRでスタッツ/順位を更新\n"
+                "/checkimage <image> [game_id] - OCR結果だけ表示。game_id指定時だけ登録済み名前に補正\n"
+                "/debugocr <image> - 座標確認用の画像を返す\n"
+                "/updatestats <game_id> <discord_user> <各スタッツ> - 累計スタッツを手動更新\n"
+                "/playerstats <game_id> <@discord_user> - プレイヤーのスタッツを表示\n"
+                "/rankings <game_id> <KD|KDA|KILLS|SCORE|MVP|AVG_WIN_TIME> - ランキング表示\n"
+                "/resetstats <game_id> <@discord_user> - プレイヤーのスタッツをリセット\n"
+                "/resetkda <game_id> - 全プレイヤーのKDAなどをリセット\n"
+                "```"
+            ),
+            (
+                "👤 **2/4: プレイヤー・チーム管理**\n"
+                "```markdown\n"
+                "/setplayer <game_id> <@discord_user> <ingame_name> - インゲーム名を設定\n"
+                "/unassign <game_id> <@discord_user> - インゲーム名を解除\n"
+                "/remakeplayer <game_id> <old_ingame_name> <new_ingame_name> - ingame_nameを修正\n"
+                "/addplayer <game_id> <@discord_user> <ingame_name> - プレイヤー追加\n"
+                "/removeplayer <game_id> <@discord_user> - プレイヤー削除\n"
+                "/showplayers <game_id> - 参加プレイヤー一覧\n"
+                "/maketeam <game_id> <team_name> [user1...user8] - チーム作成\n"
+                "/teamstats <game_id> <team_name> - チームスタッツ表示\n"
+                "/addteam <game_id> <team_name> <@discord_user> - チームに追加\n"
+                "/removeteam <game_id> <team_name> <@discord_user> - チームから削除\n"
+                "/deleteteam <game_id> <team_name> - チーム削除\n"
+                "```"
+            ),
+            (
+                "🏆 **3/4: 大会形式・順位管理**\n"
+                "```markdown\n"
+                "/makegame <game_id> [team1...team8] [participant_type] - ゲーム作成\n"
+                "/addstage <game_id> <stage_name> <format> <advance_count> [group_count] - ステージ追加\n"
+                "/setpoints <game_id> <stage_name> <points> - 順位ポイント設定 例: 1:10,2:7,3:5\n"
+                "/seedbracket <game_id> <stage_name> <random|manual> [entries] - トーナメント表のシード設定\n"
+                "/showgameconfig <game_id> - 大会設定を表示\n"
+                "/setstanding <game_id> <stage_name> <participant_name> [rank] [points] [wins] [losses] [status] - 順位更新\n"
+                "/standings <game_id> <stage_name> [text|image] - ステージ順位を表示\n"
+                "/gamestats <game_id> - ゲーム概要表示\n"
+                "/deletegame <game_id> - ゲーム削除\n"
+                "/resetdata <game_id> - トーナメントデータをリセット\n"
+                "```"
+            ),
+            (
+                "🖼️ **4/4: 画像・入出力**\n"
+                "```markdown\n"
+                "/image <game_id> <image_type> [target] [@discord_user] - スタッツ画像を生成\n"
+                "  image_type: ranking=ランキング / match=直近試合 / player=プレイヤー / team=チーム\n"
+                "  target: rankingならKD等、matchなら1〜5、teamならチーム名。playerでは不要\n"
+                "/backimage <game_id> <image> - /imageで使う背景画像を設定\n"
+                "/exportstats <game_id> - JSON出力\n"
+                "/importstats <game_id> <json_url> - JSONインポート\n"
+                "```"
+            ),
+        ]
+
+        for page in pages:
+            await ctx.send(page)
 
     @bot.hybrid_command(name="checkimage", description="画像をOCR解析します（保存なし）")
     @admin_check()
@@ -378,6 +643,7 @@ def register_commands(bot):
         ctx,
         game_id: str,
         image: discord.Attachment,
+        stage_name: Optional[str] = None,
     ):
         """画像添付からOCRでプレイヤーのKDA/MVP/Score/AvgWinTimeを読み取り更新。"""
         await ctx.send("🔍 OCRで画像を解析中...少々お待ちください。")
@@ -403,10 +669,23 @@ def register_commands(bot):
                 return
 
             updated_count, result_msg = _apply_parsed_players_to_data(tournament, parsed_players)
-            save_recent_match(tournament, parsed_players)
+            match = save_recent_match(tournament, parsed_players)
+
+            standing_updated = 0
+            if stage_name:
+                stage = _find_stage(tournament, stage_name)
+                if not stage:
+                    await ctx.send(f"⚠️ ステージ '{stage_name}' が見つからないため、順位表は更新しませんでした。")
+                else:
+                    standing_updated = _apply_match_to_stage_standings(tournament, stage, match)
+                    if stage.get("format") == "points_race" and not stage.get("scoring_rule"):
+                        await ctx.send("⚠️ points_raceですがポイント設定がありません。先に `/setpoints` を設定すると順位ポイントを加算できます。")
+
             save_data(data)
 
             await ctx.send(f"✅ **{updated_count}人のプレイヤーのスタッツを更新しました！** (ゲーム: {game_id})")
+            if stage_name and standing_updated:
+                await ctx.send(f"✅ ステージ '{stage_name}' の順位表をOCR順位から更新しました ({standing_updated}件)。")
             await send_long(ctx, result_msg)
 
         except Exception as e:
@@ -1018,10 +1297,20 @@ def register_commands(bot):
         team6: Optional[str] = None,
         team7: Optional[str] = None,
         team8: Optional[str] = None,
+        participant_type: str = "team",
     ):
         """ゲームを作成。任意でチーム名も作成。"""
         data = load_data()
         tournament = get_tournament(data, game_id)
+        participant_type = _normalize_choice(participant_type)
+        if participant_type not in VALID_PARTICIPANT_TYPES:
+            await ctx.send("❌ participant_type は `team` または `player` を指定してください。")
+            return
+
+        tournament["settings"]["name"] = game_id
+        tournament["settings"]["format"] = "multi_stage"
+        tournament["settings"]["participant_type"] = participant_type
+
         teams = [
             team_name
             for team_name in (team1, team2, team3, team4, team5, team6, team7, team8)
@@ -1036,7 +1325,249 @@ def register_commands(bot):
             tournament["teams"][team_id] = {"team_name": team_name, "members": []}
 
         save_data(data)
-        await ctx.send(f"✅ ゲーム '{game_id}' を作成しました。チーム: {', '.join(teams) if teams else 'なし'}")
+        await ctx.send(
+            f"✅ ゲーム '{game_id}' を作成しました。"
+            f"参加単位: {participant_type} / チーム: {', '.join(teams) if teams else 'なし'}"
+        )
+
+    @bot.hybrid_command(name="addstage", description="大会ステージを追加します")
+    @admin_check()
+    async def addstage(
+        ctx,
+        game_id: str,
+        stage_name: str,
+        format: str,
+        advance_count: int = 0,
+        group_count: int = 0,
+    ):
+        """大会ステージを追加する。"""
+        stage_format = _normalize_choice(format)
+        if stage_format not in VALID_STAGE_FORMATS:
+            await ctx.send(
+                "❌ format は `points_race` / `single_elimination` / "
+                "`double_elimination` / `swiss` / `group_stage` のどれかを指定してください。"
+            )
+            return
+        if advance_count < 0 or group_count < 0:
+            await ctx.send("❌ advance_count と group_count は0以上で指定してください。")
+            return
+
+        data = load_data()
+        tournament = get_tournament(data, game_id)
+        if _find_stage(tournament, stage_name):
+            await ctx.send(f"⚠️ ステージ '{stage_name}' はすでに存在します。")
+            return
+
+        stage = {
+            "stage_id": str(uuid.uuid4()),
+            "name": stage_name,
+            "format": stage_format,
+            "advance_count": advance_count,
+            "group_count": group_count,
+            "settings": {},
+            "scoring_rule": [],
+            "bracket": [],
+        }
+        tournament.setdefault("stages", []).append(stage)
+        save_data(data)
+        await ctx.send(f"✅ ステージを追加しました: {_get_stage_display(stage)}")
+
+    @bot.hybrid_command(name="setpoints", description="ステージの順位ポイントを設定します")
+    @admin_check()
+    async def setpoints(ctx, game_id: str, stage_name: str, points: str):
+        """順位ポイントを設定する。例: 1:10,2:7,3:5"""
+        try:
+            scoring_rule = _parse_points_rule(points)
+        except ValueError as e:
+            await ctx.send(f"❌ {e}")
+            return
+
+        data = load_data()
+        tournament = get_tournament(data, game_id)
+        stage = _find_stage(tournament, stage_name)
+        if not stage:
+            await ctx.send(f"❌ ステージ '{stage_name}' が見つかりません。先に `/addstage` で追加してください。")
+            return
+
+        stage["scoring_rule"] = scoring_rule
+        save_data(data)
+        rule_text = ", ".join(f"{item['rank']}位={item['points']}pt" for item in scoring_rule)
+        await ctx.send(f"✅ '{stage_name}' のポイントを設定しました: {rule_text}")
+
+    @bot.hybrid_command(name="seedbracket", description="トーナメント表のシードを設定します")
+    @admin_check()
+    async def seedbracket(
+        ctx,
+        game_id: str,
+        stage_name: str,
+        mode: str = "random",
+        entries: Optional[str] = None,
+    ):
+        """トーナメント表のシードをランダムまたは手動で設定する。"""
+        mode = _normalize_choice(mode)
+        if mode not in {"random", "manual"}:
+            await ctx.send("❌ mode は `random` または `manual` を指定してください。")
+            return
+
+        data = load_data()
+        tournament = get_tournament(data, game_id)
+        stage = _find_stage(tournament, stage_name)
+        if not stage:
+            await ctx.send(f"❌ ステージ '{stage_name}' が見つかりません。")
+            return
+        if stage.get("format") not in BRACKET_STAGE_FORMATS:
+            await ctx.send("❌ seedbracket は single_elimination / double_elimination のステージで使ってください。")
+            return
+
+        if mode == "random":
+            participants = _get_participants(tournament)
+            if not participants:
+                await ctx.send("❌ シードに使える参加者がいません。先にチームまたはプレイヤーを登録してください。")
+                return
+            random.shuffle(participants)
+        else:
+            if not entries:
+                await ctx.send("❌ manualでは entries に `TeamA,TeamB,TeamC` のように順番を指定してください。")
+                return
+            participants = []
+            for raw_name in entries.split(","):
+                name = raw_name.strip()
+                if not name:
+                    continue
+                matched = _find_participant(tournament, name)
+                participants.append(matched or {"id": None, "name": name})
+            if not participants:
+                await ctx.send("❌ entries が空です。")
+                return
+
+        stage["bracket"] = [
+            {
+                "seed": index,
+                "participant_id": participant.get("id"),
+                "participant_name": participant.get("name", ""),
+            }
+            for index, participant in enumerate(participants, 1)
+        ]
+        save_data(data)
+
+        await send_long(
+            ctx,
+            f"✅ '{stage_name}' のシードを設定しました。\n```text\n{_format_bracket(stage['bracket'])}\n```",
+        )
+
+    @bot.hybrid_command(name="showgameconfig", description="大会設定を表示します")
+    async def showgameconfig(ctx, game_id: str):
+        """大会設定を表示する。"""
+        data = load_data()
+        tournament = get_tournament(data, game_id)
+        settings = tournament.get("settings", {})
+
+        embed = discord.Embed(title=f"大会設定: {game_id}", color=0x4f8cff)
+        embed.add_field(name="大会名", value=settings.get("name", game_id), inline=True)
+        embed.add_field(name="大会構成", value=settings.get("format", "multi_stage"), inline=True)
+        embed.add_field(name="参加単位", value=settings.get("participant_type", "team"), inline=True)
+
+        stages = tournament.get("stages", [])
+        if stages:
+            stage_lines = []
+            for index, stage in enumerate(stages, 1):
+                stage_lines.append(f"{index}. {_get_stage_display(stage)}")
+                if stage.get("scoring_rule"):
+                    rule = ", ".join(
+                        f"{item['rank']}位={item['points']}pt"
+                        for item in stage.get("scoring_rule", [])
+                    )
+                    stage_lines.append(f"   points: {rule}")
+                if stage.get("bracket"):
+                    seeds = ", ".join(
+                        f"{seed['seed']}:{seed['participant_name']}"
+                        for seed in stage.get("bracket", [])[:8]
+                    )
+                    more = " ..." if len(stage.get("bracket", [])) > 8 else ""
+                    stage_lines.append(f"   seeds: {seeds}{more}")
+            stage_text = "\n".join(stage_lines)
+        else:
+            stage_text = "未設定"
+
+        embed.add_field(name="ステージ", value=stage_text[:1024], inline=False)
+        await ctx.send(embed=embed)
+
+    @bot.hybrid_command(name="setstanding", description="ステージ順位を更新します")
+    @admin_check()
+    async def setstanding(
+        ctx,
+        game_id: str,
+        stage_name: str,
+        participant_name: str,
+        rank: int = 0,
+        points: int = 0,
+        wins: int = 0,
+        losses: int = 0,
+        status: str = "",
+    ):
+        """順位表に表示するステージ成績を手動更新する。"""
+        if rank < 0 or points < 0 or wins < 0 or losses < 0:
+            await ctx.send("❌ rank / points / wins / losses は0以上で指定してください。")
+            return
+
+        data = load_data()
+        tournament = get_tournament(data, game_id)
+        stage = _find_stage(tournament, stage_name)
+        if not stage:
+            await ctx.send(f"❌ ステージ '{stage_name}' が見つかりません。")
+            return
+
+        participant = _find_participant(tournament, participant_name)
+        standing = {
+            "participant_id": participant.get("id") if participant else None,
+            "participant_name": participant.get("name") if participant else participant_name,
+            "rank": rank,
+            "points": points,
+            "wins": wins,
+            "losses": losses,
+            "status": status or "",
+        }
+        _upsert_standing(stage, standing)
+        _sort_standings(stage)
+        save_data(data)
+
+        await ctx.send(
+            f"✅ '{stage_name}' の順位を更新しました: "
+            f"{standing['participant_name']} / {_stage_result_text(stage, standing)}"
+        )
+
+    @bot.hybrid_command(name="standings", description="ステージ順位を表示します")
+    async def standings(ctx, game_id: str, stage_name: str, output: str = "image"):
+        """ステージ順位をテキストまたは画像で表示する。"""
+        output = _normalize_choice(output)
+        if output not in {"text", "image"}:
+            await ctx.send("❌ output は `text` または `image` を指定してください。")
+            return
+
+        data = load_data()
+        tournament = get_tournament(data, game_id)
+        stage = _find_stage(tournament, stage_name)
+        if not stage:
+            await ctx.send(f"❌ ステージ '{stage_name}' が見つかりません。")
+            return
+
+        _sort_standings(stage)
+        if output == "text":
+            await send_long(ctx, _build_standings_text(stage))
+            return
+
+        await ctx.defer()
+        buffers = render_standings_images(tournament, game_id, stage)
+        if len(stage.get("standings", [])) > 80:
+            await ctx.send("⚠️ 参加者が80を超えているため、画像は80件まで生成します。")
+
+        for index, buffer in enumerate(buffers, 1):
+            await ctx.send(
+                file=discord.File(
+                    buffer,
+                    filename=f"{game_id}_{stage_name}_standings_{index}.png",
+                )
+            )
 
     @bot.hybrid_command(name="gamestats", description="ゲームの概要を表示します")
     async def gamestats(ctx, game_id: str):
@@ -1046,10 +1577,20 @@ def register_commands(bot):
 
         total_players = len(tournament.get("players", {}))
         total_teams = len(tournament.get("teams", {}))
+        settings = tournament.get("settings", {})
+        stages = tournament.get("stages", [])
 
         embed = discord.Embed(title=f"ゲーム '{game_id}' の概要", color=0xffa500)
         embed.add_field(name="プレイヤー数", value=total_players, inline=True)
         embed.add_field(name="チーム数", value=total_teams, inline=True)
+        embed.add_field(name="参加単位", value=settings.get("participant_type", "team"), inline=True)
+        embed.add_field(name="ステージ数", value=len(stages), inline=True)
+        if stages:
+            embed.add_field(
+                name="ステージ",
+                value="\n".join(_get_stage_display(stage) for stage in stages)[:1024],
+                inline=False,
+            )
         await ctx.send(embed=embed)
 
     @bot.hybrid_command(name="deletegame", description="ゲームと全データを削除します")

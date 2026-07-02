@@ -3,19 +3,30 @@ OCRとゲーム設定の定数・座標定義
 """
 
 import os
-from dotenv import load_dotenv
-import pytesseract
+try:
+    from dotenv import load_dotenv
+except ModuleNotFoundError:
+    def load_dotenv():
+        return False
+try:
+    import pytesseract
+except ModuleNotFoundError:
+    pytesseract = None
 
 # WindowsでTesseractを標準パスに入れている場合
 # 環境変数 TESSERACT_CMD がある場合はそちらを優先
-pytesseract.pytesseract.tesseract_cmd = os.getenv(
-    "TESSERACT_CMD",
-    r"C:\Program Files\Tesseract-OCR\tesseract.exe"
-)
+if pytesseract is not None:
+    pytesseract.pytesseract.tesseract_cmd = os.getenv(
+        "TESSERACT_CMD",
+        r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+    )
 
 load_dotenv()
 TOKEN = os.getenv("TOKEN")
-DATA_FILE = "tournament_data.json"
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DATA_FILE = os.path.join(PROJECT_ROOT, "tournament_data.json")
+TOURNAMENT_DATA_DIR = os.path.join(PROJECT_ROOT, "tournament_data")
+TOURNAMENT_DB_EXTENSION = ".sqlite"
 BOT_ADMIN_ID = [721546801743790110,1241016834791182377,907548165459296316]
 
 # EFT:Arena リザルト画像OCR設定
